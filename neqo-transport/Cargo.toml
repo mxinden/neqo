@@ -10,6 +10,7 @@ license.workspace = true
 
 [dependencies]
 # Sync with https://searchfox.org/mozilla-central/source/Cargo.lock 2024-02-08
+enum-map = "2.7"
 indexmap = "1.9"
 log = { version = "0.4", default-features = false }
 neqo-common = { path = "../neqo-common" }
@@ -19,7 +20,6 @@ smallvec = "1.11"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
-enum-map = "2.7"
 test-fixture = { path = "../test-fixture" }
 
 [features]

@@ -17,12 +17,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use neqo_common::{hex, qdebug, qinfo, qlog::NeqoQlog, qtrace, Datagram, Encoder, IpTos};
+use neqo_common::{hex, qdebug, qinfo, qlog::NeqoQlog, qtrace, Datagram, Encoder, IpTos, IpTosEcn};
 use neqo_crypto::random;
 
 use crate::{
     ackrate::{AckRate, PeerAckDelay},
-    cc::CongestionControlAlgorithm,
+    cc::{CongestionControlAlgorithm, MAX_DATAGRAM_SIZE},
     cid::{ConnectionId, ConnectionIdRef, ConnectionIdStore, RemoteConnectionIdEntry},
     frame::{FRAME_TYPE_PATH_CHALLENGE, FRAME_TYPE_PATH_RESPONSE, FRAME_TYPE_RETIRE_CONNECTION_ID},
     packet::PacketBuilder,
@@ -545,6 +545,8 @@ pub struct Path {
     received_bytes: usize,
     /// The number of bytes sent on this path.
     sent_bytes: usize,
+    /// The number of ECN-marked bytes sent on this path that were declared lost.
+    lost_ecn_bytes: usize,
 
     /// For logging of events.
     qlog: NeqoQlog,
@@ -574,10 +576,11 @@ impl Path {
             challenge: None,
             rtt: RttEstimate::default(),
             sender,
-            tos: IpTos::default(), // TODO: Default to Ect0 when ECN is supported.
-            ttl: 64,               // This is the default TTL on many OSes.
+            tos: IpTosEcn::Ect0.into(),
+            ttl: 64, // This is the default TTL on many OSes.
             received_bytes: 0,
             sent_bytes: 0,
+            lost_ecn_bytes: 0,
             qlog,
         }
     }
@@ -980,6 +983,25 @@ impl Path {
             self.rtt.pto(space), // Important: the base PTO, not adjusted.
             lost_packets,
         );
+
+        if self.tos == IpTosEcn::Ect0.into() {
+            // If the path is currently marking outgoing packets as ECT(0),
+            // update the count of lost ECN-marked bytes.
+            self.lost_ecn_bytes += lost_packets.iter().map(|p| p.size).sum::<usize>();
+
+            // If we lost more than 3 MTUs worth of ECN-marked bytes, then
+            // disable ECN on this path. See RFC 9000, Section 13.4.2.
+            // This doesn't quite implement the algorithm given in RFC 9000,
+            // Appendix A.4, but it should be OK. (It might be worthwhile caching
+            // destination IP addresses for paths on which we had to disable ECN,
+            // in order to not persitently delay connection establishment to
+            // those destinations.)
+            if self.lost_ecn_bytes > MAX_DATAGRAM_SIZE * 3 {
+                qinfo!([self], "Disabling ECN on path due to excessive loss");
+                self.tos = IpTosEcn::NotEct.into();
+            }
+        }
+
         if cwnd_reduced {
             self.rtt.update_ack_delay(self.sender.cwnd(), self.mtu());
         }

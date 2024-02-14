@@ -16,11 +16,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use neqo_common::{qdebug, qinfo, qtrace, qwarn};
+use enum_map::EnumMap;
+use neqo_common::{qdebug, qinfo, qtrace, qwarn, IpTosEcn};
 use neqo_crypto::{Epoch, TLS_EPOCH_HANDSHAKE, TLS_EPOCH_INITIAL};
 use smallvec::{smallvec, SmallVec};
 
 use crate::{
+    frame::{FRAME_TYPE_ACK, FRAME_TYPE_ACK_ECN},
     packet::{PacketBuilder, PacketNumber, PacketType},
     recovery::RecoveryToken,
     stats::FrameStats,
@@ -352,6 +354,9 @@ pub struct AckToken {
     ranges: Vec<PacketRange>,
 }
 
+/// The counts for different ECN marks.
+pub type EcnCount = EnumMap<IpTosEcn, u64>;
+
 /// A structure that tracks what packets have been received,
 /// and what needs acknowledgement for a packet number space.
 #[derive(Debug)]
@@ -380,6 +385,8 @@ pub struct RecvdPackets {
     /// Whether we are ignoring packets that arrive out of order
     /// for the purposes of generating immediate acknowledgment.
     ignore_order: bool,
+    /// The counts of different ECN marks that have been received.
+    ecn_count: EcnCount,
 }
 
 impl RecvdPackets {
@@ -397,7 +404,13 @@ impl RecvdPackets {
             unacknowledged_count: 0,
             unacknowledged_tolerance: DEFAULT_ACK_PACKET_TOLERANCE,
             ignore_order: false,
+            ecn_count: EcnCount::default(),
         }
+    }
+
+    /// Increase the ECN count for the mark given by `ecn` by `n`.
+    pub fn inc_ecn_count(&mut self, ecn: IpTosEcn, n: u64) {
+        self.ecn_count[ecn] += n;
     }
 
     /// Get the time at which the next ACK should be sent.
@@ -596,7 +609,15 @@ impl RecvdPackets {
             .cloned()
             .collect::<Vec<_>>();
 
-        builder.encode_varint(crate::frame::FRAME_TYPE_ACK);
+        let have_ecn_counts = self.ecn_count[IpTosEcn::Ect0] > 0
+            || self.ecn_count[IpTosEcn::Ect1] > 0
+            || self.ecn_count[IpTosEcn::Ce] > 0;
+
+        builder.encode_varint(if have_ecn_counts {
+            FRAME_TYPE_ACK_ECN
+        } else {
+            FRAME_TYPE_ACK
+        });
         let mut iter = ranges.iter();
         let Some(first) = iter.next() else { return };
         builder.encode_varint(first.largest);
@@ -618,6 +639,12 @@ impl RecvdPackets {
             builder.encode_varint(last - r.largest - 2); // Gap
             builder.encode_varint(r.len() - 1); // Range
             last = r.smallest;
+        }
+
+        if have_ecn_counts {
+            builder.encode_varint(self.ecn_count[IpTosEcn::Ect0]);
+            builder.encode_varint(self.ecn_count[IpTosEcn::Ect1]);
+            builder.encode_varint(self.ecn_count[IpTosEcn::Ce]);
         }
 
         // We've sent an ACK, reset the timer.

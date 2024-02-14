@@ -462,7 +462,7 @@ impl Connection {
     }
 
     /// # Errors
-    /// When the operation fails.    
+    /// When the operation fails.
     pub fn client_enable_ech(&mut self, ech_config_list: impl AsRef<[u8]>) -> Res<()> {
         self.crypto.client_enable_ech(ech_config_list)
     }
@@ -1502,7 +1502,16 @@ impl Connection {
                         self.stats.borrow_mut().dups_rx += 1;
                     } else {
                         match self.process_packet(path, &payload, now) {
-                            Ok(migrate) => self.postprocess_packet(path, d, &packet, migrate, now),
+                            Ok(migrate) => {
+                                // Since we processed frames from this IP packet now,
+                                // update the ECN counts (RFC9000, Section 13.4.1).
+                                if let Some(space) = self.acks.get_mut(space) {
+                                    space.inc_ecn_count(d.tos().into(), 1);
+                                } else {
+                                    qdebug!("Not tracking ECN for dropped packet number space");
+                                }
+                                self.postprocess_packet(path, d, &packet, migrate, now);
+                            }
                             Err(e) => {
                                 self.ensure_error_path(path, &packet, now);
                                 return Err(e);
@@ -2706,10 +2715,13 @@ impl Connection {
                 ack_delay,
                 first_ack_range,
                 ack_ranges,
+                ecn_count,
             } => {
                 let ranges =
                     Frame::decode_ack_frame(largest_acknowledged, first_ack_range, &ack_ranges)?;
                 self.handle_ack(space, largest_acknowledged, ranges, ack_delay, now);
+                // TODO: Handle incoming ECN info.
+                qdebug!("input_frame {:?}", ecn_count);
             }
             Frame::Crypto { offset, data } => {
                 qtrace!(

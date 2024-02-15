@@ -17,6 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use enum_map::EnumMap;
 use neqo_common::{hex, qdebug, qinfo, qlog::NeqoQlog, qtrace, Datagram, Encoder, IpTos, IpTosEcn};
 use neqo_crypto::random;
 
@@ -30,7 +31,7 @@ use crate::{
     rtt::RttEstimate,
     sender::PacketSender,
     stats::FrameStats,
-    tracking::{PacketNumberSpace, SentPacket},
+    tracking::{EcnCount, PacketNumberSpace, SentPacket},
     Stats,
 };
 
@@ -547,6 +548,8 @@ pub struct Path {
     sent_bytes: usize,
     /// The number of ECN-marked bytes sent on this path that were declared lost.
     lost_ecn_bytes: usize,
+    /// The ECN counts received in the last ACK on this path, for each packet number space.
+    ecn_count: EnumMap<PacketNumberSpace, EcnCount>,
 
     /// For logging of events.
     qlog: NeqoQlog,
@@ -581,8 +584,35 @@ impl Path {
             received_bytes: 0,
             sent_bytes: 0,
             lost_ecn_bytes: 0,
+            ecn_count: EnumMap::default(),
             qlog,
         }
+    }
+
+    /// Return latest ECN count received on this path.
+    pub fn ecn_count(&self, space: PacketNumberSpace) -> EcnCount {
+        self.ecn_count[space]
+    }
+
+    /// Set the ECN count received on this path.
+    pub fn set_ecn_count(&mut self, space: PacketNumberSpace, ecn_count: EcnCount) {
+        qinfo!("Setting ECN count for {:} to {:?}", space, ecn_count);
+        self.ecn_count[space] = ecn_count;
+    }
+
+    /// Return the current `IpTos` value for this path.
+    pub fn tos(&self) -> IpTos {
+        self.tos
+    }
+
+    /// Whether this path is currently marking packets with ECN.
+    pub fn is_ecn_enabled(&self) -> bool {
+        self.tos != IpTosEcn::NotEct.into()
+    }
+
+    /// Disable ECN marking on this path.
+    pub fn disable_ecn(&mut self) {
+        self.tos = IpTosEcn::NotEct.into();
     }
 
     /// Whether this path is the primary or current path for the connection.
@@ -984,7 +1014,7 @@ impl Path {
             lost_packets,
         );
 
-        if self.tos == IpTosEcn::Ect0.into() {
+        if self.is_ecn_enabled() {
             // If the path is currently marking outgoing packets as ECT(0),
             // update the count of lost ECN-marked bytes.
             self.lost_ecn_bytes += lost_packets.iter().map(|p| p.size).sum::<usize>();
@@ -998,7 +1028,7 @@ impl Path {
             // those destinations.)
             if self.lost_ecn_bytes > MAX_DATAGRAM_SIZE * 3 {
                 qinfo!([self], "Disabling ECN on path due to excessive loss");
-                self.tos = IpTosEcn::NotEct.into();
+                self.disable_ecn();
             }
         }
 

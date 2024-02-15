@@ -20,7 +20,7 @@ use std::{
 
 use neqo_common::{
     event::Provider as EventProvider, hex, hex_snip_middle, hrtime, qdebug, qerror, qinfo,
-    qlog::NeqoQlog, qtrace, qwarn, Datagram, Decoder, Encoder, Role,
+    qlog::NeqoQlog, qtrace, qwarn, Datagram, Decoder, Encoder, IpTosEcn, Role,
 };
 use neqo_crypto::{
     agent::CertificateInfo, Agent, AntiReplay, AuthenticationStatus, Cipher, Client, Group,
@@ -56,7 +56,7 @@ use crate::{
         self, TransportParameter, TransportParameterId, TransportParameters,
         TransportParametersHandler,
     },
-    tracking::{AckTracker, PacketNumberSpace, SentPacket},
+    tracking::{diff_ecn_count, AckTracker, EcnCount, PacketNumberSpace, SentPacket},
     version::{Version, WireVersion},
     AppError, ConnectionError, Error, Res, StreamId,
 };
@@ -2719,9 +2719,14 @@ impl Connection {
             } => {
                 let ranges =
                     Frame::decode_ack_frame(largest_acknowledged, first_ack_range, &ack_ranges)?;
-                self.handle_ack(space, largest_acknowledged, ranges, ack_delay, now);
-                // TODO: Handle incoming ECN info.
-                qdebug!("input_frame {:?}", ecn_count);
+                self.handle_ack(
+                    space,
+                    largest_acknowledged,
+                    ranges,
+                    ecn_count,
+                    ack_delay,
+                    now,
+                );
             }
             Frame::Crypto { offset, data } => {
                 qtrace!(
@@ -2898,6 +2903,7 @@ impl Connection {
         space: PacketNumberSpace,
         largest_acknowledged: u64,
         ack_ranges: R,
+        ecn_count: EcnCount,
         ack_delay: u64,
         now: Instant,
     ) where
@@ -2914,6 +2920,44 @@ impl Connection {
             self.decode_ack_delay(ack_delay),
             now,
         );
+
+        let path = self.paths.primary();
+        if path.borrow().is_ecn_enabled() {
+            // RFC 9000, Section 13.4.2.1:
+            //
+            // > An endpoint that receives an ACK frame with ECN counts therefore validates
+            // > the counts before using them. It performs this validation by comparing newly
+            // > received counts against those from the last successfully processed ACK frame.
+            //
+            // RFC 9000 fails to state that this is done *per packet number space*.
+            //
+            // > If an ACK frame newly acknowledges a packet that the endpoint sent with
+            // > either the ECT(0) or ECT(1) codepoint set, ECN validation fails if the
+            // > corresponding ECN counts are not present in the ACK frame.
+            //
+            // We always mark with ECT(0) - if at all - so we only need to check for that.
+            // Also, if we sent a packet with ECT(0) and get only an ACK frame (and not an
+            // ACK-ECN frame), `ecn_counts` will be all zero and the check below will fail,
+            // so no need to explicitly check for the above.
+            //
+            // > ECN validation also fails if the sum of the increase in ECT(0) and ECN-CE counts is
+            // > less than the number of newly acknowledged packets that were originally sent with an
+            // > ECT(0) marking.
+            let newly_acked = acked_packets.len() as u64;
+            let ecn_diff = diff_ecn_count(&ecn_count, &path.borrow().ecn_count(space));
+            let sum_inc = ecn_diff[IpTosEcn::Ect0] + ecn_diff[IpTosEcn::Ce];
+            let cur_mark: IpTosEcn = path.borrow().tos().into();
+            if sum_inc < newly_acked {
+                qwarn!(
+                    "ACK had {} new marks, but sent {} packets, disabling ECN",
+                    ecn_diff[cur_mark],
+                    newly_acked
+                );
+                path.borrow_mut().disable_ecn();
+            }
+            path.borrow_mut().set_ecn_count(space, ecn_count);
+        }
+
         for acked in acked_packets {
             for token in &acked.tokens {
                 match token {

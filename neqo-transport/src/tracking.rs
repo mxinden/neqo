@@ -16,7 +16,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use enum_map::EnumMap;
+use enum_map::{Enum, EnumMap};
 use neqo_common::{qdebug, qinfo, qtrace, qwarn, IpTosEcn};
 use neqo_crypto::{Epoch, TLS_EPOCH_HANDSHAKE, TLS_EPOCH_INITIAL};
 use smallvec::{smallvec, SmallVec};
@@ -29,7 +29,7 @@ use crate::{
 };
 
 // TODO(mt) look at enabling EnumMap for this: https://stackoverflow.com/a/44905797/1375574
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq, Enum)]
 pub enum PacketNumberSpace {
     Initial,
     Handshake,
@@ -357,6 +357,20 @@ pub struct AckToken {
 /// The counts for different ECN marks.
 pub type EcnCount = EnumMap<IpTosEcn, u64>;
 
+/// Whether any of the ECN counts are non-zero.
+pub fn have_ecn_count(ecn: &EcnCount) -> bool {
+    ecn[IpTosEcn::Ect0] > 0 || ecn[IpTosEcn::Ect1] > 0 || ecn[IpTosEcn::Ce] > 0
+}
+
+/// Subtract the ECN counts in `b` from `a`.
+pub fn diff_ecn_count(a: &EcnCount, b: &EcnCount) -> EcnCount {
+    let mut diff = EcnCount::default();
+    for (ecn, count) in &mut diff {
+        *count = a[ecn].saturating_sub(b[ecn]);
+    }
+    diff
+}
+
 /// A structure that tracks what packets have been received,
 /// and what needs acknowledgement for a packet number space.
 #[derive(Debug)]
@@ -609,11 +623,8 @@ impl RecvdPackets {
             .cloned()
             .collect::<Vec<_>>();
 
-        let have_ecn_counts = self.ecn_count[IpTosEcn::Ect0] > 0
-            || self.ecn_count[IpTosEcn::Ect1] > 0
-            || self.ecn_count[IpTosEcn::Ce] > 0;
-
-        builder.encode_varint(if have_ecn_counts {
+        let have_ecn_count = have_ecn_count(&self.ecn_count);
+        builder.encode_varint(if have_ecn_count {
             FRAME_TYPE_ACK_ECN
         } else {
             FRAME_TYPE_ACK
@@ -641,7 +652,7 @@ impl RecvdPackets {
             last = r.smallest;
         }
 
-        if have_ecn_counts {
+        if have_ecn_count {
             builder.encode_varint(self.ecn_count[IpTosEcn::Ect0]);
             builder.encode_varint(self.ecn_count[IpTosEcn::Ect1]);
             builder.encode_varint(self.ecn_count[IpTosEcn::Ce]);

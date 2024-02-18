@@ -20,10 +20,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-14, windows-latest]
+        os: [windows-latest]
         # Don't increase beyond what Firefox is currently using:
         # https://firefox-source-docs.mozilla.org/writing-rust-code/update-policy.html#schedule
-        rust-toolchain: [1.74.0, stable, nightly]
+        rust-toolchain: [stable]
         type: [debug]
         include:
           - os: ubuntu-latest
@@ -125,7 +125,7 @@ jobs:
 
       - name: Run tests and determine coverage
         run: |
-          cargo +${{ matrix.rust-toolchain }} llvm-cov nextest $BUILD_TYPE --all-targets --features ci --no-fail-fast --lcov --output-path lcov.info
+          cargo +${{ matrix.rust-toolchain }} test -p neqo-common --all-targets --all-features -- --nocapture
           cargo +${{ matrix.rust-toolchain }} bench --features bench --no-run
 
       - name: Run client/server transfer

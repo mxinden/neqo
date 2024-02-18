@@ -132,8 +132,10 @@ mod tests {
     #[tokio::test]
     async fn datagram_tos() -> Result<(), io::Error> {
         let sender = Socket::bind("127.0.0.1:0")?;
+        println!("sender bind");
         let receiver_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
         let receiver = Socket::bind(receiver_addr)?;
+        println!("receiver bind");
 
         sleep(Duration::from_millis(100)).await;
 
@@ -147,15 +149,19 @@ mod tests {
         );
 
         sender.writable().await?;
+        println!("writable");
         sender.send(datagram.clone())?;
+        println!("sent");
 
         sleep(Duration::from_millis(100)).await;
 
         receiver.readable().await?;
+        println!("readable");
         let received_datagram = receiver
             .recv(&receiver_addr)
             .expect("receive to succeed")
             .expect("receive to yield datagram");
+        println!("read");
 
         // Assert that the ECN is correct.
         assert_eq!(

@@ -1,7 +1,7 @@
 name: CI
 on:
   push:
-    branches: ["main"]
+    branches:
     paths-ignore: ["*.md", "*.png", "*.svg", "LICENSE-*"]
   pull_request:
     branches: ["main"]

@@ -81,6 +81,7 @@ impl Socket {
         let mut meta = RecvMeta::default();
 
         match self.socket.try_io(Interest::READABLE, || {
+            println!("READABLE");
             self.state.recv(
                 (&self.socket).into(),
                 &mut [IoSliceMut::new(&mut buf)],
@@ -155,8 +156,8 @@ mod tests {
 
         sleep(Duration::from_millis(100)).await;
 
-        receiver.readable().await?;
-        println!("readable");
+        // receiver.readable().await?;
+        // println!("readable");
         let received_datagram = receiver
             .recv(&receiver_addr)
             .expect("receive to succeed")

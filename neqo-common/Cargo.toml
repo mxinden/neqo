@@ -20,6 +20,8 @@ time = { version = "0.3", features = ["formatting"] }
 tokio = { version = "1", features = ["net", "time", "macros", "rt", "rt-multi-thread"], optional = true }
 
 [dev-dependencies]
+# TODO: Needed?
+futures = "0.3"
 test-fixture = { path = "../test-fixture" }
 
 [features]

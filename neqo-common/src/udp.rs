@@ -123,9 +123,10 @@ impl Socket {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{time::Duration, task::Poll, pin::Pin};
 
     use tokio::time::sleep;
+    use futures::{future::FutureExt, Future};
 
     use super::*;
     use crate::{IpTos, IpTosDscp, IpTosEcn};
@@ -137,6 +138,12 @@ mod tests {
         let receiver_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
         let receiver = Socket::bind(receiver_addr)?;
         println!("receiver bind");
+        futures::future::poll_fn(|cx| {
+            let mut p = std::pin::pin!(receiver.readable());
+            assert!(p.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        }).await;
+        println!("receiver polled pending");
 
         sleep(Duration::from_millis(100)).await;
 
@@ -156,8 +163,8 @@ mod tests {
 
         sleep(Duration::from_millis(100)).await;
 
-        // receiver.readable().await?;
-        // println!("readable");
+        receiver.readable().await?;
+        println!("readable");
         let received_datagram = receiver
             .recv(&receiver_addr)
             .expect("receive to succeed")

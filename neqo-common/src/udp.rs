@@ -151,7 +151,7 @@ mod tests {
         let datagram = Datagram::new(
             sender.local_addr()?,
             receiver.local_addr()?,
-            None,
+            Default::default(),
             None,
             "Hello, world!".as_bytes().to_vec(),
         );

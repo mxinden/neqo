@@ -147,7 +147,7 @@ mod tests {
 
         sleep(Duration::from_millis(100)).await;
 
-        let tos_tx = IpTos::from((IpTosDscp::Le, IpTosEcn::default()));
+        let tos_tx = IpTos::from((IpTosDscp::Le, IpTosEcn::Ect1));
         let datagram = Datagram::new(
             sender.local_addr()?,
             receiver.local_addr()?,

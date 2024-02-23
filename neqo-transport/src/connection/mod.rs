@@ -2946,11 +2946,10 @@ impl Connection {
             let newly_acked = acked_packets.len() as u64;
             let ecn_diff = diff_ecn_count(&ecn_count, &path.borrow().ecn_count(space));
             let sum_inc = ecn_diff[IpTosEcn::Ect0] + ecn_diff[IpTosEcn::Ce];
-            let cur_mark: IpTosEcn = path.borrow().tos().into();
             if sum_inc < newly_acked {
                 qwarn!(
-                    "ACK had {} new marks, but sent {} packets, disabling ECN",
-                    ecn_diff[cur_mark],
+                    "ACK had {} new marks, but acked {} packets, disabling ECN",
+                    sum_inc,
                     newly_acked
                 );
                 path.borrow_mut().disable_ecn();

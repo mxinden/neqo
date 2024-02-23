@@ -1506,7 +1506,7 @@ impl Connection {
                                 // Since we processed frames from this IP packet now,
                                 // update the ECN counts (RFC9000, Section 13.4.1).
                                 if let Some(space) = self.acks.get_mut(space) {
-                                    space.inc_ecn_count(d.tos().into(), 1);
+                                    space.inc_ecn_count(d.tos().into());
                                 } else {
                                     qdebug!("Not tracking ECN for dropped packet number space");
                                 }

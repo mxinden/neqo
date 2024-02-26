@@ -1506,7 +1506,7 @@ impl Connection {
                                 // Since we processed frames from this IP packet now,
                                 // update the ECN counts (RFC9000, Section 13.4.1).
                                 if let Some(space) = self.acks.get_mut(space) {
-                                    space.inc_ecn_count(d.tos().into(), 1);
+                                    space.inc_ecn_count(d.tos().into());
                                 } else {
                                     qdebug!("Not tracking ECN for dropped packet number space");
                                 }
@@ -2946,7 +2946,6 @@ impl Connection {
             let newly_acked = acked_packets.len() as u64;
             let ecn_diff = diff_ecn_count(&ecn_count, &path.borrow().ecn_count(space));
             let sum_inc = ecn_diff[IpTosEcn::Ect0] + ecn_diff[IpTosEcn::Ce];
-            let cur_mark: IpTosEcn = path.borrow().tos().into();
             if sum_inc < newly_acked {
                 qwarn!(
                     "ACK had {} new marks, but acked {} packets, disabling ECN",

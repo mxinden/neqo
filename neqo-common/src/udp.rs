@@ -4,8 +4,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![allow(clippy::missing_errors_doc)]
-#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::missing_errors_doc)] // Functions simply delegate to tokio and quinn-udp.
+#![allow(clippy::missing_panics_doc)] // Functions simply delegate to tokio and quinn-udp.
 
 use std::{
     io::{self, IoSliceMut},
@@ -27,14 +27,9 @@ impl Socket {
     /// Calls [`std::net::UdpSocket::bind`] and instantiates [`quinn_udp::UdpSocketState`].
     pub fn bind<A: ToSocketAddrs>(addr: A) -> Result<Self, io::Error> {
         let socket = std::net::UdpSocket::bind(addr)?;
-        let state = quinn_udp::UdpSocketState::new((&socket).into())?;
-
-        // Reverse non-blocking flag set by `UdpSocketState` to make the test non-racy
-        #[cfg(test)]
-        socket.set_nonblocking(false)?;
 
         Ok(Self {
-            state,
+            state: quinn_udp::UdpSocketState::new((&socket).into())?,
             socket: tokio::net::UdpSocket::from_std(socket)?,
         })
     }
@@ -122,34 +117,25 @@ impl Socket {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use tokio::time::sleep;
-
     use super::*;
     use crate::{IpTos, IpTosDscp, IpTosEcn};
 
     #[tokio::test]
     async fn datagram_tos() -> Result<(), io::Error> {
         let sender = Socket::bind("127.0.0.1:0")?;
-        let receiver_addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let receiver_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
         let receiver = Socket::bind(receiver_addr)?;
 
-        sleep(Duration::from_millis(100)).await;
-
-        let tos_tx = IpTos::from((IpTosDscp::Le, IpTosEcn::Ce));
         let datagram = Datagram::new(
             sender.local_addr()?,
             receiver.local_addr()?,
-            tos_tx,
+            IpTos::from((IpTosDscp::Le, IpTosEcn::Ect1)),
             None,
             "Hello, world!".as_bytes().to_vec(),
         );
 
         sender.writable().await?;
         sender.send(datagram.clone())?;
-
-        sleep(Duration::from_millis(100)).await;
 
         receiver.readable().await?;
         let received_datagram = receiver

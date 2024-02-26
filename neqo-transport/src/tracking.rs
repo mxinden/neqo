@@ -422,9 +422,9 @@ impl RecvdPackets {
         }
     }
 
-    /// Increase the ECN count for the mark given by `ecn` by `n`.
-    pub fn inc_ecn_count(&mut self, ecn: IpTosEcn, n: u64) {
-        self.ecn_count[ecn] += n;
+    /// Increase the ECN count for the mark given by `ecn` by `1`.
+    pub fn inc_ecn_count(&mut self, ecn: IpTosEcn) {
+        self.ecn_count[ecn] += 1;
     }
 
     /// Get the time at which the next ACK should be sent.

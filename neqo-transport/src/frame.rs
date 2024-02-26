@@ -626,7 +626,8 @@ impl<'a> Frame<'a> {
 
 #[cfg(test)]
 mod tests {
-    use neqo_common::{Decoder, Encoder};
+    use enum_map::{enum_map, EnumMap};
+    use neqo_common::{Decoder, Encoder, IpTosEcn};
 
     use crate::{
         cid::MAX_CONNECTION_ID_LEN,

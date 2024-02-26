@@ -600,11 +600,6 @@ impl Path {
         self.ecn_count[space] = ecn_count;
     }
 
-    /// Return the current `IpTos` value for this path.
-    pub fn tos(&self) -> IpTos {
-        self.tos
-    }
-
     /// Whether this path is currently marking packets with ECN.
     pub fn is_ecn_enabled(&self) -> bool {
         self.tos != IpTosEcn::NotEct.into()

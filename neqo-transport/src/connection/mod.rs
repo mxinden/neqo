@@ -2949,8 +2949,8 @@ impl Connection {
             let cur_mark: IpTosEcn = path.borrow().tos().into();
             if sum_inc < newly_acked {
                 qwarn!(
-                    "ACK had {} new marks, but sent {} packets, disabling ECN",
-                    ecn_diff[cur_mark],
+                    "ACK had {} new marks, but acked {} packets, disabling ECN",
+                    sum_inc,
                     newly_acked
                 );
                 path.borrow_mut().disable_ecn();

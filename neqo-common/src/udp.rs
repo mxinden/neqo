@@ -198,11 +198,11 @@ mod tests {
         let received_datagrams = receiver.recv(&receiver_addr).expect("receive to succeed");
 
         assert_eq!(received_datagrams.len(), max_segments);
-        for datagram in received_datagrams {
+        for (i, datagram) in received_datagrams.into_iter().enumerate() {
             assert_eq!(
                 SEGMENT_SIZE,
                 datagram.len(),
-                "Expect received datagram to have same length as sent datagram."
+                "Expect received datagram {i} to have same length as sent datagram."
             );
         }
 

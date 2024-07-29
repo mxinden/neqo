@@ -1,7 +1,7 @@
 FROM martenseemann/quic-network-simulator-endpoint@sha256:5114afeff460a5ce65b066680abcb1ac34f742b40fbf95a60843c1b2783bc532 AS buildimage
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git coreutils build-essential libclang-dev lld gyp ninja-build zlib1g-dev python \
+    git coreutils build-essential libclang-dev lld gyp ninja-build zlib1g-dev \
     && apt-get autoremove -y && apt-get clean -y \
     && rm -rf /var/lib/apt/lists/*
 

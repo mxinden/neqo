@@ -149,7 +149,7 @@ impl PacketBuilder {
     ///
     /// If, after calling this method, `remaining()` returns 0, then call `abort()` to get
     /// the encoder back.
-    pub fn short(mut encoder: Encoder, key_phase: bool, dcid: &Option<impl AsRef<[u8]>>) -> Self {
+    pub fn short(mut encoder: Encoder, key_phase: bool, dcid: Option<impl AsRef<[u8]>>) -> Self {
         let mut limit = Self::infer_limit(&encoder);
         let header_start = encoder.len();
         // Check that there is enough space for the header.
@@ -1065,7 +1065,7 @@ mod tests {
     fn build_short() {
         fixture_init();
         let mut builder =
-            PacketBuilder::short(Encoder::new(), true, &Some(ConnectionId::from(SERVER_CID)));
+            PacketBuilder::short(Encoder::new(), true, Some(ConnectionId::from(SERVER_CID)));
         builder.pn(0, 1);
         builder.encode(SAMPLE_SHORT_PAYLOAD); // Enough payload for sampling.
         let packet = builder
@@ -1080,7 +1080,7 @@ mod tests {
         let mut firsts = Vec::new();
         for _ in 0..64 {
             let mut builder =
-                PacketBuilder::short(Encoder::new(), true, &Some(ConnectionId::from(SERVER_CID)));
+                PacketBuilder::short(Encoder::new(), true, Some(ConnectionId::from(SERVER_CID)));
             builder.scramble(true);
             builder.pn(0, 1);
             firsts.push(builder.as_ref()[0]);
@@ -1153,7 +1153,7 @@ mod tests {
         let first = encoder.clone();
 
         let mut builder =
-            PacketBuilder::short(encoder, false, &Some(ConnectionId::from(SERVER_CID)));
+            PacketBuilder::short(encoder, false, Some(ConnectionId::from(SERVER_CID)));
         builder.pn(1, 3);
         builder.encode(&[0]); // Minimal size (packet number is big enough).
         let encoder = builder.build(&mut prot).expect("build");
@@ -1237,7 +1237,7 @@ mod tests {
         let mut builder = PacketBuilder::short(
             Encoder::with_capacity(100),
             true,
-            &Some(ConnectionId::from(SERVER_CID)),
+            Some(ConnectionId::from(SERVER_CID)),
         );
         builder.pn(0, 1);
         // Pad, but not up to the full capacity. Leave enough space for the

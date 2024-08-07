@@ -44,6 +44,8 @@ impl NeqoQlog {
     ) -> Result<Self, qlog::Error> {
         qlog_path.push(format!("{file_prefix}.sqlog"));
 
+        println!("==== enabled_with_file {:?}", qlog_path);
+
         let file = OpenOptions::new()
             .write(true)
             // As a server, the original DCID is chosen by the client. Using

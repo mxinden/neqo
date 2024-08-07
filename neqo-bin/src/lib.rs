@@ -274,7 +274,7 @@ mod tests {
                     .as_secs()
             ));
             fs::create_dir(&dir).unwrap();
-            println!("==== {}", dir);
+            println!("==== {:?}", dir);
             Self { path: dir }
         }
 

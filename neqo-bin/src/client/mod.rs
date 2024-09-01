@@ -361,10 +361,12 @@ enum CloseState {
 
 /// Network client, e.g. [`neqo_transport::Connection`] or [`neqo_http3::Http3Client`].
 trait Client {
-    fn process_output(&mut self, now: Instant) -> Output;
-    fn process_multiple_input<'a, I>(&mut self, dgrams: I, now: Instant)
-    where
-        I: IntoIterator<Item = &'a Datagram>;
+    fn process<'a>(
+        &mut self,
+        input: Option<Datagram<&[u8]>>,
+        now: Instant,
+        write_buffer: &'a mut Vec<u8>,
+    ) -> Output<&'a [u8]>;
     fn has_events(&self) -> bool;
     fn close<S>(&mut self, now: Instant, app_error: AppError, msg: S)
     where
@@ -380,13 +382,15 @@ struct Runner<'a, H: Handler> {
     handler: H,
     timeout: Option<Pin<Box<Sleep>>>,
     args: &'a Args,
+    recv_buf: Vec<u8>,
+    send_buf: Vec<u8>,
 }
 
 impl<'a, H: Handler> Runner<'a, H> {
     async fn run(mut self) -> Res<Option<ResumptionToken>> {
         loop {
             let handler_done = self.handler.handle(&mut self.client)?;
-            self.process_output().await?;
+            self.process().await?;
             if self.client.has_events() {
                 continue;
             }
@@ -407,7 +411,7 @@ impl<'a, H: Handler> Runner<'a, H> {
             }
 
             match ready(self.socket, self.timeout.as_mut()).await? {
-                Ready::Socket => self.process_multiple_input().await?,
+                Ready::Socket => {}
                 Ready::Timeout => {
                     self.timeout = None;
                 }
@@ -421,12 +425,18 @@ impl<'a, H: Handler> Runner<'a, H> {
         Ok(self.handler.take_token())
     }
 
-    async fn process_output(&mut self) -> Result<(), io::Error> {
+    async fn process(&mut self) -> Result<(), io::Error> {
         loop {
-            match self.client.process_output(Instant::now()) {
+            // TODO: Should we recv even if the previous recv didn't yield anything?
+            let dgram = self.socket.recv(&self.local_addr, &mut self.recv_buf)?;
+
+            match self
+                .client
+                .process(dgram, Instant::now(), &mut self.send_buf)
+            {
                 Output::Datagram(dgram) => {
                     self.socket.writable().await?;
-                    self.socket.send(&dgram)?;
+                    self.socket.send(dgram)?;
                 }
                 Output::Callback(new_timeout) => {
                     qdebug!("Setting timeout of {:?}", new_timeout);
@@ -438,20 +448,6 @@ impl<'a, H: Handler> Runner<'a, H> {
                     break;
                 }
             }
-        }
-
-        Ok(())
-    }
-
-    async fn process_multiple_input(&mut self) -> Res<()> {
-        loop {
-            let dgrams = self.socket.recv(&self.local_addr)?;
-            if dgrams.is_empty() {
-                break;
-            }
-            self.client
-                .process_multiple_input(dgrams.iter(), Instant::now());
-            self.process_output().await?;
         }
 
         Ok(())
@@ -568,6 +564,8 @@ pub async fn client(mut args: Args) -> Res<()> {
                     local_addr: real_local,
                     socket: &mut socket,
                     timeout: None,
+                    recv_buf: Vec::with_capacity(neqo_udp::RECV_BUF_SIZE),
+                    send_buf: Vec::new(),
                 }
                 .run()
                 .await?
@@ -584,6 +582,8 @@ pub async fn client(mut args: Args) -> Res<()> {
                     local_addr: real_local,
                     socket: &mut socket,
                     timeout: None,
+                    recv_buf: Vec::with_capacity(neqo_udp::RECV_BUF_SIZE),
+                    send_buf: Vec::new(),
                 }
                 .run()
                 .await?

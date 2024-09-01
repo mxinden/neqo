@@ -57,17 +57,26 @@ pub fn connected_server(server: &Server) -> ConnectionRef {
 pub fn connect(client: &mut Connection, server: &mut Server) -> ConnectionRef {
     server.set_validation(ValidateAddress::Never);
 
+    println!("===== 1");
+
     assert_eq!(*client.state(), State::Init);
     let out = client.process(None, now()); // ClientHello
     assert!(out.as_dgram_ref().is_some());
     let out = server.process(out.as_dgram_ref(), now()); // ServerHello...
     assert!(out.as_dgram_ref().is_some());
 
+    println!("===== 2");
+
     // Ingest the server Certificate.
+
+    println!("===== process client");
     let out = client.process(out.as_dgram_ref(), now());
     assert!(out.as_dgram_ref().is_some()); // This should just be an ACK.
+    println!("===== process server");
     let out = server.process(out.as_dgram_ref(), now());
     assert!(out.as_dgram_ref().is_none()); // So the server should have nothing to say.
+
+    println!("===== 3");
 
     // Now mark the server as authenticated.
     client.authenticated(AuthenticationStatus::Ok, now());
@@ -77,10 +86,14 @@ pub fn connect(client: &mut Connection, server: &mut Server) -> ConnectionRef {
     let out = server.process(out.as_dgram_ref(), now());
     assert!(out.as_dgram_ref().is_some()); // ACK + HANDSHAKE_DONE + NST
 
+    println!("===== 4");
+
     // Have the client process the HANDSHAKE_DONE.
     let out = client.process(out.as_dgram_ref(), now());
     assert!(out.as_dgram_ref().is_none());
     assert_eq!(*client.state(), State::Confirmed);
+
+    println!("===== 5");
 
     connected_server(server)
 }

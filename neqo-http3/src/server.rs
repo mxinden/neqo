@@ -113,6 +113,30 @@ impl Http3Server {
         self.server.ech_config()
     }
 
+    pub fn process_2<'a>(
+        &mut self,
+        dgram: Option<Datagram<&[u8]>>,
+        now: Instant,
+        write_buffer: &'a mut Vec<u8>,
+    ) -> Output<&'a [u8]> {
+        qtrace!([self], "Process.");
+        let out = self
+            .server
+            // TODO: NLL borrow issue. See https://github.com/rust-lang/rust/issues/54663
+            //
+            // Find alternative.
+            .process_2(dgram, now, unsafe { &mut *(write_buffer as *mut _) });
+        self.process_http3(now);
+        // If we do not that a dgram already try again after process_http3.
+        match out {
+            Output::Datagram(d) => {
+                qtrace!([self], "Send packet: {:?}", d);
+                return Output::Datagram(d);
+            }
+            _ => self.server.process_2(None, now, write_buffer),
+        }
+    }
+
     pub fn process(&mut self, dgram: Option<&Datagram>, now: Instant) -> Output {
         qtrace!([self], "Process.");
         let out = self.server.process(dgram, now);

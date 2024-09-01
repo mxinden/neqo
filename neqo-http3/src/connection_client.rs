@@ -855,6 +855,31 @@ impl Http3Client {
     }
 
     /// This function combines  `process_input` and `process_output` function.
+    pub fn process_2<'a>(
+        &mut self,
+        input: Option<Datagram<&[u8]>>,
+        now: Instant,
+        write_buffer: &'a mut Vec<u8>,
+    ) -> Output<&'a [u8]> {
+        // TODO: NLL borrow issue. See https://github.com/rust-lang/rust/issues/54663
+        //
+        // Find alternative.
+        let out = self
+            .conn
+            .process_into(input, now, unsafe { &mut *(write_buffer as *mut _) });
+        self.process_http3(now);
+        if !matches!(out, Output::None) {
+            return out;
+        }
+
+        // TODO: The order in which to call process_2 and process_http3 is
+        // not obvious. Clean up needed.
+        let out = self.conn.process_into(None, now, write_buffer);
+        self.process_http3(now);
+        out
+    }
+
+    /// This function combines  `process_input` and `process_output` function.
     pub fn process(&mut self, dgram: Option<&Datagram>, now: Instant) -> Output {
         qtrace!([self], "Process.");
         if let Some(d) = dgram {

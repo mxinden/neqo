@@ -194,7 +194,12 @@ fn qns_read_response(filename: &str) -> Result<Vec<u8>, io::Error> {
 
 #[allow(clippy::module_name_repetitions)]
 pub trait HttpServer: Display {
-    fn process(&mut self, dgram: Option<&Datagram>, now: Instant) -> Output;
+    fn process_2<'a>(
+        &mut self,
+        dgram: Option<Datagram<&[u8]>>,
+        now: Instant,
+        write_buffer: &'a mut Vec<u8>,
+    ) -> Output<&'a [u8]>;
     fn process_events(&mut self, now: Instant);
     fn has_events(&self) -> bool;
 }
@@ -205,6 +210,8 @@ pub struct ServerRunner {
     server: Box<dyn HttpServer>,
     timeout: Option<Pin<Box<Sleep>>>,
     sockets: Vec<(SocketAddr, crate::udp::Socket)>,
+    recv_buf: Vec<u8>,
+    send_buf: Vec<u8>,
 }
 
 impl ServerRunner {
@@ -219,30 +226,45 @@ impl ServerRunner {
             server,
             timeout: None,
             sockets,
+            recv_buf: Vec::with_capacity(neqo_udp::RECV_BUF_SIZE),
+            send_buf: vec![],
         }
     }
 
-    /// Tries to find a socket, but then just falls back to sending from the first.
-    fn find_socket(&mut self, addr: SocketAddr) -> &mut crate::udp::Socket {
-        let ((_host, first_socket), rest) = self.sockets.split_first_mut().unwrap();
-        rest.iter_mut()
-            .map(|(_host, socket)| socket)
-            .find(|socket| {
-                socket
-                    .local_addr()
-                    .ok()
-                    .map_or(false, |socket_addr| socket_addr == addr)
-            })
-            .unwrap_or(first_socket)
-    }
+    // TODO: Could as well call it UDP IO now, given that it does both in and output.
+    async fn process(&mut self, inx: Option<usize>) -> Result<(), io::Error> {
+        let mut dgram = if let Some(inx) = inx {
+            let (host, socket) = self.sockets.get_mut(inx).unwrap();
+            let dgram = socket.recv(host, &mut self.recv_buf)?;
+            if dgram.is_none() {
+                return Ok(());
+            }
+            dgram
+        } else {
+            None
+        };
 
-    async fn process(&mut self, mut dgram: Option<&Datagram>) -> Result<(), io::Error> {
         loop {
-            match self.server.process(dgram.take(), (self.now)()) {
+            match self
+                .server
+                .process_2(dgram.take(), (self.now)(), &mut self.send_buf)
+            {
                 Output::Datagram(dgram) => {
-                    let socket = self.find_socket(dgram.source());
+                    let socket = {
+                        let addr = dgram.source();
+                        let ((_host, first_socket), rest) = self.sockets.split_first_mut().unwrap();
+                        rest.iter_mut()
+                            .map(|(_host, socket)| socket)
+                            .find(|socket| {
+                                socket
+                                    .local_addr()
+                                    .ok()
+                                    .map_or(false, |socket_addr| socket_addr == addr)
+                            })
+                            .unwrap_or(first_socket)
+                    };
                     socket.writable().await?;
-                    socket.send(&dgram)?;
+                    socket.send(dgram)?;
                 }
                 Output::Callback(new_timeout) => {
                     qdebug!("Setting timeout of {:?}", new_timeout);
@@ -288,14 +310,8 @@ impl ServerRunner {
 
             match self.ready().await? {
                 Ready::Socket(inx) => loop {
-                    let (host, socket) = self.sockets.get_mut(inx).unwrap();
-                    let dgrams = socket.recv(host)?;
-                    if dgrams.is_empty() {
-                        break;
-                    }
-                    for dgram in dgrams {
-                        self.process(Some(&dgram)).await?;
-                    }
+                    // TODO: Passing the index here to only borrow &mut self in process. Better way?
+                    self.process(Some(inx)).await?;
                 },
                 Ready::Timeout => {
                     self.timeout = None;

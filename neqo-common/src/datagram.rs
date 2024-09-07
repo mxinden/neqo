@@ -6,7 +6,7 @@
 
 use std::{net::SocketAddr, ops::Deref};
 
-use crate::IpTos;
+use crate::{hex_with_len, IpTos};
 
 // TODO: Copy sane here? Should only implement Copy if D is Copy, e.g. &[u8].
 #[derive(Clone, PartialEq, Eq, Copy)]
@@ -137,18 +137,16 @@ impl<'a> From<Datagram<&[u8]>> for Datagram {
     }
 }
 
-impl<D> std::fmt::Debug for Datagram<D> {
-    fn fmt(&self, _f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        // TODO
-        // write!(
-        //     f,
-        //     "Datagram {:?} {:?}->{:?}: {}",
-        //     self.tos,
-        //     self.src,
-        //     self.dst,
-        //     hex_with_len(&self.d)
-        // )
-        Ok(())
+impl<D: AsRef<[u8]>> std::fmt::Debug for Datagram<D> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "Datagram {:?} {:?}->{:?}: {}",
+            self.tos,
+            self.src,
+            self.dst,
+            hex_with_len(&self.d)
+        )
     }
 }
 

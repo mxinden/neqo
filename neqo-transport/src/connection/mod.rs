@@ -96,7 +96,7 @@ pub enum ZeroRttState {
     Rejected,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 /// Type returned from `process()` and `process_output()`. Users are required to
 /// call these repeatedly until `Callback` or `None` is returned.
 pub enum Output<D = Vec<u8>> {
@@ -107,6 +107,16 @@ pub enum Output<D = Vec<u8>> {
     /// Connection requires `process_input()` be called when the `Duration`
     /// elapses.
     Callback(Duration),
+}
+
+impl<D: AsRef<[u8]>> Debug for Output<D> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => write!(f, "None"),
+            Self::Datagram(arg0) => f.debug_tuple("Datagram").field(arg0).finish(),
+            Self::Callback(arg0) => f.debug_tuple("Callback").field(arg0).finish(),
+        }
+    }
 }
 
 impl Output {

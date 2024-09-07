@@ -198,8 +198,6 @@ impl<'a, 'b> PartialEq<Decoder<'b>> for Decoder<'a> {
 #[derive(Clone, PartialEq, Eq)]
 pub struct Encoder<D = Vec<u8>> {
     buf: D,
-    // TODO
-    capacity: Option<usize>,
 }
 
 // TODO: Still needed?
@@ -207,19 +205,15 @@ impl Default for Encoder {
     fn default() -> Self {
         Self {
             buf: Default::default(),
-            capacity: None,
         }
     }
 }
 
 impl Encoder<&mut Vec<u8>> {
-    pub fn new_with_buffer<'a>(buf: &'a mut Vec<u8>, capacity: usize) -> Encoder<&'a mut Vec<u8>> {
+    pub fn new_with_buffer<'a>(buf: &'a mut Vec<u8>) -> Encoder<&'a mut Vec<u8>> {
         // TODO: Valid assumption? Would one sometimes want to use two encoders on one write_buffer?
         assert_eq!(buf.len(), 0);
-        Encoder {
-            buf,
-            capacity: Some(capacity),
-        }
+        Encoder { buf }
     }
 }
 
@@ -235,7 +229,6 @@ impl Encoder {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             buf: Vec::with_capacity(capacity),
-            capacity: Some(capacity),
         }
     }
 
@@ -287,14 +280,6 @@ impl Encoder {
 }
 
 impl<D: AsRef<Vec<u8>> + AsMut<Vec<u8>>> Encoder<D> {
-    /// Get the capacity of the underlying buffer: the number of bytes that can be
-    /// written without causing an allocation to occur.
-    #[must_use]
-    pub fn capacity(&self) -> usize {
-        // TODO: This is a hack to combine the two worlds of an owned and a borrowed encoder.
-        self.capacity.unwrap_or(self.buf.as_ref().capacity())
-    }
-
     /// Get the length of the underlying buffer: the number of bytes that have
     /// been written to the buffer.
     #[must_use]
@@ -485,7 +470,6 @@ impl From<&[u8]> for Encoder {
     fn from(buf: &[u8]) -> Self {
         Self {
             buf: Vec::from(buf),
-            capacity: None,
         }
     }
 }

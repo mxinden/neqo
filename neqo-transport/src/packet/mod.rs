@@ -132,9 +132,10 @@ impl<'a> PacketBuilder<'a> {
     /// The minimum useful frame size.  If space is less than this, we will claim to be full.
     pub const MINIMUM_FRAME_SIZE: usize = 2;
 
-    fn infer_limit(encoder: &Encoder<&mut Vec<u8>>) -> usize {
-        if encoder.capacity() > 64 {
-            encoder.capacity()
+    fn infer_limit(limit: usize) -> usize {
+        // TODO: I don't know what the 64 is all about. Thus leaving the infer_limit function intact for now.
+        if limit > 64 {
+            limit
         } else {
             2048
         }
@@ -153,8 +154,9 @@ impl<'a> PacketBuilder<'a> {
         mut encoder: Encoder<&'a mut Vec<u8>>,
         key_phase: bool,
         dcid: Option<impl AsRef<[u8]>>,
+        limit: usize,
     ) -> Self {
-        let mut limit = Self::infer_limit(&encoder);
+        let mut limit = Self::infer_limit(limit);
         let header_start = encoder.len();
         // Check that there is enough space for the header.
         // 5 = 1 (first byte) + 4 (packet number)
@@ -195,8 +197,9 @@ impl<'a> PacketBuilder<'a> {
         version: Version,
         mut dcid: Option<impl AsRef<[u8]>>,
         mut scid: Option<impl AsRef<[u8]>>,
+        limit: usize,
     ) -> Self {
-        let mut limit = Self::infer_limit(&encoder);
+        let mut limit = Self::infer_limit(limit);
         let header_start = encoder.len();
         // Check that there is enough space for the header.
         // 11 = 1 (first byte) + 4 (version) + 2 (dcid+scid length) + 4 (packet number)
@@ -472,8 +475,7 @@ impl<'a> PacketBuilder<'a> {
         odcid: &[u8],
         write_buffer: &'b mut Vec<u8>,
     ) -> Res<&'b [u8]> {
-        // TODO: Not ideal to be passing 0 here.
-        let mut encoder = Encoder::new_with_buffer(write_buffer, 0);
+        let mut encoder = Encoder::new_with_buffer(write_buffer);
         encoder.encode_vec(1, odcid);
         let start = encoder.len();
         encoder.encode_byte(
@@ -507,8 +509,7 @@ impl<'a> PacketBuilder<'a> {
         versions: &[Version],
         write_buffer: &'b mut Vec<u8>,
     ) -> &'b [u8] {
-        // TODO: Not ideal to be passing 0 here.
-        let mut encoder = Encoder::new_with_buffer(write_buffer, 0);
+        let mut encoder = Encoder::new_with_buffer(write_buffer);
         let mut grease = random::<4>();
         // This will not include the "QUIC bit" sometimes.  Intentionally.
         encoder.encode_byte(PACKET_BIT_LONG | (grease[3] & 0x7f));

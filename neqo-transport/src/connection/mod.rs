@@ -2022,11 +2022,12 @@ impl Connection {
         address_validation: &AddressValidationInfo,
         version: Version,
         grease_quic_bit: bool,
+        limit: usize,
     ) -> (PacketType, PacketBuilder<'a>) {
         let pt = PacketType::from(cspace);
         let mut builder = if pt == PacketType::Short {
             qdebug!("Building Short dcid {:?}", path.remote_cid());
-            PacketBuilder::short(encoder, tx.key_phase(), path.remote_cid())
+            PacketBuilder::short(encoder, tx.key_phase(), path.remote_cid(), limit)
         } else {
             qdebug!(
                 "Building {:?} dcid {:?} scid {:?}",
@@ -2034,7 +2035,14 @@ impl Connection {
                 path.remote_cid(),
                 path.local_cid(),
             );
-            PacketBuilder::long(encoder, pt, version, path.remote_cid(), path.local_cid())
+            PacketBuilder::long(
+                encoder,
+                pt,
+                version,
+                path.remote_cid(),
+                path.local_cid(),
+                limit,
+            )
         };
         if builder.remaining() > 0 {
             builder.scramble(grease_quic_bit);
@@ -2350,11 +2358,8 @@ impl Connection {
         // TODO: epochs or packetnumberspaces below?
         // Frames for different epochs must go in different packets, but then these
         // packets can go in a single datagram
-        // TODO: Previously provided profile.limit. Needed?
-        // let mut encoder = Encoder::with_capacity(profile.limit());
         assert_eq!(write_buffer.len(), 0);
-        // TODO: obviously we don't want to shrink each time.
-        let mut encoder = Encoder::new_with_buffer(write_buffer, profile.limit());
+        let mut encoder = Encoder::new_with_buffer(write_buffer);
         for space in PacketNumberSpace::iter() {
             // Ensure we have tx crypto state for this epoch, or skip it.
             let Some((cspace, tx)) = self.crypto.states.select_tx_mut(self.version, *space) else {
@@ -2370,6 +2375,7 @@ impl Connection {
                 &self.address_validation,
                 version,
                 grease_quic_bit,
+                profile.limit(),
             );
             let pn = Self::add_packet_number(
                 &mut builder,
@@ -3471,7 +3477,7 @@ impl Connection {
         let mut tmp_write_buffer = vec![];
 
         // TODO: This was previously initialized with the mtu. Relevant?
-        let encoder = Encoder::new_with_buffer(&mut tmp_write_buffer, mtu);
+        let encoder = Encoder::new_with_buffer(&mut tmp_write_buffer);
 
         let (_, mut builder) = Self::build_packet_header(
             &path.borrow(),
@@ -3481,6 +3487,7 @@ impl Connection {
             &self.address_validation,
             version,
             false,
+            mtu,
         );
         _ = Self::add_packet_number(
             &mut builder,

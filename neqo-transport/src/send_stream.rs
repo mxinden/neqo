@@ -2596,7 +2596,8 @@ mod tests {
         ss.insert(StreamId::from(0), s);
 
         let mut tokens = Vec::new();
-        let mut builder = PacketBuilder::short(Encoder::new(), false, None::<&[u8]>);
+        // TODO: 0 ideal here?
+        let mut builder = PacketBuilder::short(Encoder::new(), false, None::<&[u8]>, 0);
 
         // Write a small frame: no fin.
         let written = builder.len();
@@ -2684,7 +2685,8 @@ mod tests {
         ss.insert(StreamId::from(0), s);
 
         let mut tokens = Vec::new();
-        let mut builder = PacketBuilder::short(Encoder::new(), false, None::<&[u8]>);
+        // TODO: 0 ideal here?
+        let mut builder = PacketBuilder::short(Encoder::new(), false, None::<&[u8]>, 0);
         ss.write_frames(
             TransmissionPriority::default(),
             &mut builder,
@@ -2762,7 +2764,8 @@ mod tests {
         assert_eq!(s.next_bytes(false), Some((0, &b"ab"[..])));
 
         // This doesn't report blocking yet.
-        let mut builder = PacketBuilder::short(Encoder::new(), false, None::<&[u8]>);
+        // TODO: 0 ideal here?
+        let mut builder = PacketBuilder::short(Encoder::new(), false, None::<&[u8]>, 0);
         let mut tokens = Vec::new();
         let mut stats = FrameStats::default();
         s.write_blocked_frame(
@@ -2815,7 +2818,8 @@ mod tests {
         assert_eq!(s.send_atomic(b"abc").unwrap(), 0);
 
         // Assert that STREAM_DATA_BLOCKED is sent.
-        let mut builder = PacketBuilder::short(Encoder::new(), false, None::<&[u8]>);
+        // TODO: 0 ideal here?
+        let mut builder = PacketBuilder::short(Encoder::new(), false, None::<&[u8]>, 0);
         let mut tokens = Vec::new();
         let mut stats = FrameStats::default();
         s.write_blocked_frame(
@@ -2902,7 +2906,8 @@ mod tests {
         s.mark_as_lost(len_u64, 0, true);
 
         // No frame should be sent here.
-        let mut builder = PacketBuilder::short(Encoder::new(), false, None::<&[u8]>);
+        // TODO: 0 ideal here?
+        let mut builder = PacketBuilder::short(Encoder::new(), false, None::<&[u8]>, 0);
         let mut tokens = Vec::new();
         let mut stats = FrameStats::default();
         s.write_stream_frame(

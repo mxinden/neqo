@@ -647,7 +647,9 @@ mod tests {
             element_id: stream_id.as_u64(),
             priority: Priority::default(),
         };
-        let mut e = Encoder::default();
+        // TODO: separate write buffer needed?
+        let mut write_buffer = vec![];
+        let mut e = Encoder::new_with_buffer(&mut write_buffer);
         frame.encode(&mut e);
         peer_conn.control_send(e.as_ref());
         let out = peer_conn.process(None, now());

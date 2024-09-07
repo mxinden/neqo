@@ -802,7 +802,9 @@ impl Connection {
 
         let tps = &self.tps;
         if let Agent::Server(ref mut s) = self.crypto.tls {
-            let mut enc = Encoder::default();
+            // TODO: separate write buffer needed?
+            let mut write_buffer = vec![];
+            let mut enc = Encoder::new_with_buffer(&mut write_buffer);
             enc.encode_vvec_with(|enc_inner| {
                 tps.borrow().local.encode(enc_inner);
             });
@@ -2034,7 +2036,7 @@ impl Connection {
     fn build_packet_header<'a>(
         path: &Path,
         cspace: CryptoSpace,
-        encoder: Encoder<&'a mut Vec<u8>>,
+        encoder: Encoder<'a>,
         tx: &CryptoDxState,
         address_validation: &AddressValidationInfo,
         version: Version,

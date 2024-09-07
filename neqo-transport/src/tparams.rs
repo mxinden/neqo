@@ -688,7 +688,9 @@ impl ExtensionHandler for TransportParametersHandler {
         qdebug!("Writing transport parameters, msg={:?}", msg);
 
         // TODO(ekr@rtfm.com): Modify to avoid a copy.
-        let mut enc = Encoder::default();
+        // TODO: separate write buffer needed?
+        let mut write_buffer = vec![];
+        let mut enc = Encoder::new_with_buffer(&mut write_buffer);
         self.local.encode(&mut enc);
         assert!(enc.len() <= d.len());
         d[..enc.len()].copy_from_slice(enc.as_ref());

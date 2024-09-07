@@ -195,61 +195,36 @@ impl<'a, 'b> PartialEq<Decoder<'b>> for Decoder<'a> {
 
 // TODO: Default Vec<u8> still needed? Or is this actually always &mut Vec<u8> or even &mut [u8]?
 /// Encoder is good for building data structures.
-#[derive(Clone, PartialEq, Eq)]
-pub struct Encoder<D = Vec<u8>> {
-    buf: D,
+#[derive(PartialEq, Eq)]
+pub struct Encoder<'a> {
+    buf: &'a mut Vec<u8>,
 }
 
-// TODO: Still needed?
-impl Default for Encoder {
-    fn default() -> Self {
-        Self {
-            buf: Default::default(),
-        }
+impl<'a> Encoder<'a> {
+    pub fn new_with_buffer(buf: &'a mut Vec<u8>) -> Self {
+        Self { buf }
     }
 }
 
-impl Encoder<&mut Vec<u8>> {
-    pub fn new_with_buffer<'a>(buf: &'a mut Vec<u8>) -> Encoder<&'a mut Vec<u8>> {
-        // TODO: Valid assumption? Would one sometimes want to use two encoders on one write_buffer?
-        assert_eq!(buf.len(), 0);
-        Encoder { buf }
-    }
-}
-
-impl Encoder {
-    /// Default construction of an empty buffer.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Construction of a buffer with a predetermined capacity.
-    #[must_use]
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            buf: Vec::with_capacity(capacity),
-        }
-    }
-
+impl<'a> Encoder<'a> {
     /// Don't use this except in testing.
     ///
     /// # Panics
     ///
     /// When `s` contains non-hex values or an odd number of values.
     #[must_use]
-    pub fn from_hex(s: impl AsRef<str>) -> Self {
+    pub fn from_hex(mut self, s: impl AsRef<str>) -> Self {
         let s = s.as_ref();
         assert_eq!(s.len() % 2, 0, "Needs to be even length");
 
         let cap = s.len() / 2;
-        let mut enc = Self::with_capacity(cap);
+        self.buf.reserve(cap);
 
         for i in 0..cap {
             let v = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap();
-            enc.encode_byte(v);
+            self.encode_byte(v);
         }
-        enc
+        self
     }
 
     /// Static helper to determine how long a varint-prefixed array encodes to.
@@ -279,38 +254,36 @@ impl Encoder {
     }
 }
 
-impl<D: AsRef<Vec<u8>> + AsMut<Vec<u8>>> Encoder<D> {
+impl<'a> Encoder<'a> {
     /// Get the length of the underlying buffer: the number of bytes that have
     /// been written to the buffer.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.buf.as_ref().len()
+        self.buf.len()
     }
 
     /// Returns true if the encoder buffer contains no elements.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.buf.as_ref().is_empty()
+        self.buf.is_empty()
     }
 
     /// Create a view of the current contents of the buffer.
     /// Note: for a view of a slice, use `Decoder::new(&enc[s..e])`
     #[must_use]
     pub fn as_decoder(&self) -> Decoder {
-        // TODO: Intermediate step needed?
-        let buffer: &Vec<u8> = self.buf.as_ref();
-        Decoder::new(buffer)
+        Decoder::new(self.buf)
     }
 
     /// Generic encode routine for arbitrary data.
     pub fn encode(&mut self, data: &[u8]) -> &mut Self {
-        self.buf.as_mut().extend_from_slice(data.as_ref());
+        self.buf.extend_from_slice(data.as_ref());
         self
     }
 
     /// Encode a single byte.
     pub fn encode_byte(&mut self, data: u8) -> &mut Self {
-        self.buf.as_mut().push(data);
+        self.buf.push(data);
         self
     }
 
@@ -362,14 +335,14 @@ impl<D: AsRef<Vec<u8>> + AsMut<Vec<u8>>> Encoder<D> {
     /// When `f()` returns a length larger than `2^8n`.
     #[allow(clippy::cast_possible_truncation)]
     pub fn encode_vec_with<F: FnOnce(&mut Self)>(&mut self, n: usize, f: F) -> &mut Self {
-        let start = self.buf.as_ref().len();
-        let len = self.buf.as_ref().len();
-        self.buf.as_mut().resize(len + n, 0);
+        let start = self.buf.len();
+        let len = self.buf.len();
+        self.buf.resize(len + n, 0);
         f(self);
-        let len = self.buf.as_ref().len() - start - n;
+        let len = self.buf.len() - start - n;
         assert!(len < (1 << (n * 8)));
         for i in 0..n {
-            self.buf.as_mut()[start + i] = ((len >> (8 * (n - i - 1))) & 0xff) as u8;
+            self.buf[start + i] = ((len >> (8 * (n - i - 1))) & 0xff) as u8;
         }
         self
     }
@@ -390,12 +363,12 @@ impl<D: AsRef<Vec<u8>> + AsMut<Vec<u8>>> Encoder<D> {
     ///
     /// When `f()` writes more than 2^62 bytes.
     pub fn encode_vvec_with<F: FnOnce(&mut Self)>(&mut self, f: F) -> &mut Self {
-        let start = self.buf.as_ref().len();
+        let start = self.buf.len();
         // Optimize for short buffers, reserve a single byte for the length.
-        let len = self.buf.as_ref().len();
-        self.buf.as_mut().resize(len + 1, 0);
+        let len = self.buf.len();
+        self.buf.resize(len + 1, 0);
         f(self);
-        let len = self.buf.as_ref().len() - start - 1;
+        let len = self.buf.len() - start - 1;
 
         // Now to insert a varint for `len` before the encoded block.
         //
@@ -411,7 +384,7 @@ impl<D: AsRef<Vec<u8>> + AsMut<Vec<u8>>> Encoder<D> {
 
         let v = u64::try_from(len).expect("encoded value fits in a u64");
         // The lower order byte fits before the inserted block of bytes.
-        self.buf.as_mut()[start] = (v & 0xff) as u8;
+        self.buf[start] = (v & 0xff) as u8;
         let (count, bits) = match () {
             // Great.  The byte we have is enough.
             () if v < (1 << 6) => return self,
@@ -423,75 +396,66 @@ impl<D: AsRef<Vec<u8>> + AsMut<Vec<u8>>> Encoder<D> {
         // Now, we need to encode the high bits after the main block, ...
         self.encode_uint(count, (v >> 8) | bits);
         // ..., then rotate the entire thing right by the same amount.
-        self.buf.as_mut()[start..].rotate_right(count);
+        self.buf[start..].rotate_right(count);
         self
     }
 
     /// Truncate the encoder to the given size.
     pub fn truncate(&mut self, len: usize) {
-        self.buf.as_mut().truncate(len);
+        self.buf.truncate(len);
     }
 
     /// Pad the buffer to `len` with bytes set to `v`.
     pub fn pad_to(&mut self, len: usize, v: u8) {
-        if len > self.buf.as_ref().len() {
-            self.buf.as_mut().resize(len, v);
+        if len > self.buf.len() {
+            self.buf.resize(len, v);
         }
+    }
+
+    // TODO: rename function and arguments?
+    pub fn clone_into<'b>(&'a self, write_buffer: &'b mut Vec<u8>) -> Encoder<'b> {
+        write_buffer.extend_from_slice(self.buf);
+        Encoder { buf: write_buffer }
     }
 }
 
-impl Debug for Encoder {
+impl<'a> Debug for Encoder<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str(&hex_with_len(self))
     }
 }
 
-impl<D: AsRef<[u8]>> AsRef<[u8]> for Encoder<D> {
+impl<'a> AsRef<[u8]> for Encoder<'a> {
     fn as_ref(&self) -> &[u8] {
-        self.buf.as_ref()
+        self.buf
     }
 }
 
-impl<D: AsMut<[u8]>> AsMut<[u8]> for Encoder<D> {
+impl<'a> AsMut<[u8]> for Encoder<'a> {
     fn as_mut(&mut self) -> &mut [u8] {
-        self.buf.as_mut()
+        self.buf
     }
 }
 
-impl<'a> From<Decoder<'a>> for Encoder {
+impl<'a> From<Encoder<'a>> for &'a [u8] {
     #[must_use]
-    fn from(dec: Decoder<'a>) -> Self {
-        Self::from(&dec.buf[dec.offset..])
-    }
-}
-
-impl From<&[u8]> for Encoder {
-    #[must_use]
-    fn from(buf: &[u8]) -> Self {
-        Self {
-            buf: Vec::from(buf),
-        }
-    }
-}
-
-impl<'a> From<Encoder<&'a mut Vec<u8>>> for &'a [u8] {
-    #[must_use]
-    fn from(encoder: Encoder<&'a mut Vec<u8>>) -> &'a [u8] {
+    fn from(encoder: Encoder<'a>) -> &'a [u8] {
         encoder.buf
     }
 }
 
 // TODO: Should this be test only?
-impl From<Encoder> for Vec<u8> {
+impl<'a> From<Encoder<'a>> for Vec<u8> {
     #[must_use]
     fn from(buf: Encoder) -> Vec<u8> {
-        buf.buf
+        // TODO: Is allocation intuitive here?
+        buf.buf.clone()
     }
 }
 
-impl<'a> From<Encoder<&'a mut Vec<u8>>> for &'a mut Vec<u8> {
+impl<'a> From<Encoder<'a>> for &'a mut Vec<u8> {
     #[must_use]
-    fn from(buf: Encoder<&'a mut Vec<u8>>) -> &'a mut Vec<u8> {
+    fn from(buf: Encoder<'a>) -> &'a mut Vec<u8> {
         buf.buf
     }
 }

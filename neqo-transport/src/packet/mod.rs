@@ -119,7 +119,7 @@ struct PacketBuilderOffsets {
 /// A packet builder that can be used to produce short packets and long packets.
 /// This does not produce Retry or Version Negotiation.
 pub struct PacketBuilder<'a> {
-    encoder: Encoder<&'a mut Vec<u8>>,
+    encoder: Encoder<'a>,
     pn: PacketNumber,
     header: Range<usize>,
     offsets: PacketBuilderOffsets,
@@ -151,7 +151,7 @@ impl<'a> PacketBuilder<'a> {
     /// If, after calling this method, `remaining()` returns 0, then call `abort()` to get
     /// the encoder back.
     pub fn short(
-        mut encoder: Encoder<&'a mut Vec<u8>>,
+        mut encoder: Encoder<'a>,
         key_phase: bool,
         dcid: Option<impl AsRef<[u8]>>,
         limit: usize,
@@ -192,7 +192,7 @@ impl<'a> PacketBuilder<'a> {
     /// See `short()` for more on how to handle this in cases where there is no space.
     #[allow(clippy::similar_names)]
     pub fn long(
-        mut encoder: Encoder<&'a mut Vec<u8>>,
+        mut encoder: Encoder<'a>,
         pt: PacketType,
         version: Version,
         mut dcid: Option<impl AsRef<[u8]>>,
@@ -402,7 +402,7 @@ impl<'a> PacketBuilder<'a> {
     /// # Errors
     ///
     /// This will return an error if the packet is too large.
-    pub fn build(mut self, crypto: &mut CryptoDxState) -> Res<Encoder<&'a mut Vec<u8>>> {
+    pub fn build(mut self, crypto: &mut CryptoDxState) -> Res<Encoder<'a>> {
         if self.len() > self.limit {
             qwarn!("Packet contents are more than the limit");
             debug_assert!(false);
@@ -447,7 +447,7 @@ impl<'a> PacketBuilder<'a> {
 
     /// Abort writing of this packet and return the encoder.
     #[must_use]
-    pub fn abort(mut self) -> Encoder<&'a mut Vec<u8>> {
+    pub fn abort(mut self) -> Encoder<'a> {
         self.encoder.truncate(self.header.start);
         self.encoder
     }
@@ -535,7 +535,7 @@ impl<'a> PacketBuilder<'a> {
 }
 
 impl<'a> Deref for PacketBuilder<'a> {
-    type Target = Encoder<&'a mut Vec<u8>>;
+    type Target = Encoder<'a>;
 
     fn deref(&self) -> &Self::Target {
         &self.encoder
@@ -548,7 +548,7 @@ impl<'a> DerefMut for PacketBuilder<'a> {
     }
 }
 
-impl<'a> From<PacketBuilder<'a>> for Encoder<&'a mut Vec<u8>> {
+impl<'a> From<PacketBuilder<'a>> for Encoder<'a> {
     fn from(v: PacketBuilder<'a>) -> Self {
         v.encoder
     }
@@ -721,7 +721,9 @@ impl<'a> PublicPacket<'a> {
             return false;
         }
         let (header, tag) = self.data.split_at(self.data.len() - expansion);
-        let mut encoder = Encoder::with_capacity(self.data.len());
+        // TODO: separate write buffer needed?
+        let mut write_buffer = Vec::with_capacity(self.data.len());
+        let mut encoder = Encoder::new_with_buffer(&mut write_buffer);
         encoder.encode_vec(1, odcid);
         encoder.encode(header);
         retry::use_aead(version, |aead| {

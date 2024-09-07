@@ -1788,3 +1788,1381 @@ pub struct SendStreamRecoveryToken {
     length: usize,
     fin: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{cell::RefCell, collections::VecDeque, num::NonZeroUsize, rc::Rc};
+
+    use neqo_common::{event::Provider, hex_with_len, qtrace, Encoder};
+
+    use super::SendStreamRecoveryToken;
+    use crate::{
+        connection::{RetransmissionPriority, TransmissionPriority},
+        events::ConnectionEvent,
+        fc::SenderFlowControl,
+        packet::PacketBuilder,
+        recovery::{RecoveryToken, StreamRecoveryToken},
+        send_stream::{
+            RangeState, RangeTracker, SendStream, SendStreamState, SendStreams, TxBuffer,
+        },
+        stats::FrameStats,
+        ConnectionEvents, StreamId, SEND_BUFFER_SIZE,
+    };
+
+    fn connection_fc(limit: u64) -> Rc<RefCell<SenderFlowControl<()>>> {
+        Rc::new(RefCell::new(SenderFlowControl::new((), limit)))
+    }
+
+    #[test]
+    fn mark_acked_from_zero() {
+        let mut rt = RangeTracker::default();
+
+        // ranges can go from nothing->Sent if queued for retrans and then
+        // acks arrive
+        rt.mark_acked(5, 5);
+        assert_eq!(rt.highest_offset(), 10);
+        assert_eq!(rt.acked_from_zero(), 0);
+        rt.mark_acked(10, 4);
+        assert_eq!(rt.highest_offset(), 14);
+        assert_eq!(rt.acked_from_zero(), 0);
+
+        rt.mark_sent(0, 5);
+        assert_eq!(rt.highest_offset(), 14);
+        assert_eq!(rt.acked_from_zero(), 0);
+        rt.mark_acked(0, 5);
+        assert_eq!(rt.highest_offset(), 14);
+        assert_eq!(rt.acked_from_zero(), 14);
+
+        rt.mark_acked(12, 20);
+        assert_eq!(rt.highest_offset(), 32);
+        assert_eq!(rt.acked_from_zero(), 32);
+
+        // ack the lot
+        rt.mark_acked(0, 400);
+        assert_eq!(rt.highest_offset(), 400);
+        assert_eq!(rt.acked_from_zero(), 400);
+
+        // acked trumps sent
+        rt.mark_sent(0, 200);
+        assert_eq!(rt.highest_offset(), 400);
+        assert_eq!(rt.acked_from_zero(), 400);
+    }
+
+    /// Check that `marked_acked` correctly handles all paths.
+    /// ```ignore
+    ///   SSS  SSSAAASSS
+    /// +    AAAAAAAAA
+    /// = SSSAAAAAAAAASS
+    /// ```
+    #[test]
+    fn mark_acked_1() {
+        let mut rt = RangeTracker::default();
+        rt.mark_sent(0, 3);
+        rt.mark_sent(6, 3);
+        rt.mark_acked(9, 3);
+        rt.mark_sent(12, 3);
+
+        rt.mark_acked(3, 10);
+
+        let mut canon = RangeTracker::default();
+        canon.used.insert(0, (3, RangeState::Sent));
+        canon.used.insert(3, (10, RangeState::Acked));
+        canon.used.insert(13, (2, RangeState::Sent));
+        assert_eq!(rt, canon);
+    }
+
+    /// Check that `marked_acked` correctly handles all paths.
+    /// ```ignore
+    ///   SSS  SSS   AAA
+    /// +   AAAAAAAAA
+    /// = SSAAAAAAAAAAAA
+    /// ```
+    #[test]
+    fn mark_acked_2() {
+        let mut rt = RangeTracker::default();
+        rt.mark_sent(0, 3);
+        rt.mark_sent(6, 3);
+        rt.mark_acked(12, 3);
+
+        rt.mark_acked(2, 10);
+
+        let mut canon = RangeTracker::default();
+        canon.used.insert(0, (2, RangeState::Sent));
+        canon.used.insert(2, (13, RangeState::Acked));
+        assert_eq!(rt, canon);
+    }
+
+    /// Check that `marked_acked` correctly handles all paths.
+    /// ```ignore
+    ///    AASSS  AAAA
+    /// + AAAAAAAAA
+    /// = AAAAAAAAAAAA
+    /// ```
+    #[test]
+    fn mark_acked_3() {
+        let mut rt = RangeTracker::default();
+        rt.mark_acked(1, 2);
+        rt.mark_sent(3, 3);
+        rt.mark_acked(8, 4);
+
+        rt.mark_acked(0, 9);
+
+        let canon = RangeTracker {
+            acked: 12,
+            ..RangeTracker::default()
+        };
+        assert_eq!(rt, canon);
+    }
+
+    /// Check that `marked_acked` correctly handles all paths.
+    /// ```ignore
+    ///      SSS
+    /// + AAAA
+    /// = AAAASS
+    /// ```
+    #[test]
+    fn mark_acked_4() {
+        let mut rt = RangeTracker::default();
+        rt.mark_sent(3, 3);
+
+        rt.mark_acked(0, 4);
+
+        let mut canon = RangeTracker {
+            acked: 4,
+            ..Default::default()
+        };
+        canon.used.insert(4, (2, RangeState::Sent));
+        assert_eq!(rt, canon);
+    }
+
+    /// Check that `marked_acked` correctly handles all paths.
+    /// ```ignore
+    ///   AAAAAASSS
+    /// +    AAA
+    /// = AAAAAASSS
+    /// ```
+    #[test]
+    fn mark_acked_5() {
+        let mut rt = RangeTracker::default();
+        rt.mark_acked(0, 6);
+        rt.mark_sent(6, 3);
+
+        rt.mark_acked(3, 3);
+
+        let mut canon = RangeTracker {
+            acked: 6,
+            ..RangeTracker::default()
+        };
+        canon.used.insert(6, (3, RangeState::Sent));
+        assert_eq!(rt, canon);
+    }
+
+    /// Check that `marked_acked` correctly handles all paths.
+    /// ```ignore
+    ///      AAA  AAA  AAA
+    /// +       AAAAAAA
+    /// =    AAAAAAAAAAAAA
+    /// ```
+    #[test]
+    fn mark_acked_6() {
+        let mut rt = RangeTracker::default();
+        rt.mark_acked(3, 3);
+        rt.mark_acked(8, 3);
+        rt.mark_acked(13, 3);
+
+        rt.mark_acked(6, 7);
+
+        let mut canon = RangeTracker::default();
+        canon.used.insert(3, (13, RangeState::Acked));
+        assert_eq!(rt, canon);
+    }
+
+    /// Check that `marked_acked` correctly handles all paths.
+    /// ```ignore
+    ///      AAA  AAA
+    /// +       AAA
+    /// =    AAAAAAAA
+    /// ```
+    #[test]
+    fn mark_acked_7() {
+        let mut rt = RangeTracker::default();
+        rt.mark_acked(3, 3);
+        rt.mark_acked(8, 3);
+
+        rt.mark_acked(6, 3);
+
+        let mut canon = RangeTracker::default();
+        canon.used.insert(3, (8, RangeState::Acked));
+        assert_eq!(rt, canon);
+    }
+
+    /// Check that `marked_acked` correctly handles all paths.
+    /// ```ignore
+    ///   SSSSSSSS
+    /// +   AAAA
+    /// = SSAAAASS
+    /// ```
+    #[test]
+    fn mark_acked_8() {
+        let mut rt = RangeTracker::default();
+        rt.mark_sent(0, 8);
+
+        rt.mark_acked(2, 4);
+
+        let mut canon = RangeTracker::default();
+        canon.used.insert(0, (2, RangeState::Sent));
+        canon.used.insert(2, (4, RangeState::Acked));
+        canon.used.insert(6, (2, RangeState::Sent));
+        assert_eq!(rt, canon);
+    }
+
+    /// Check that `marked_acked` correctly handles all paths.
+    /// ```ignore
+    ///        SSS
+    /// + AAA
+    /// = AAA  SSS
+    /// ```
+    #[test]
+    fn mark_acked_9() {
+        let mut rt = RangeTracker::default();
+        rt.mark_sent(5, 3);
+
+        rt.mark_acked(0, 3);
+
+        let mut canon = RangeTracker {
+            acked: 3,
+            ..Default::default()
+        };
+        canon.used.insert(5, (3, RangeState::Sent));
+        assert_eq!(rt, canon);
+    }
+
+    /// Check that `marked_sent` correctly handles all paths.
+    /// ```ignore
+    ///   AAA   AAA   SSS
+    /// + SSSSSSSSSSSS
+    /// = AAASSSAAASSSSSS
+    /// ```
+    #[test]
+    fn mark_sent_1() {
+        let mut rt = RangeTracker::default();
+        rt.mark_acked(0, 3);
+        rt.mark_acked(6, 3);
+        rt.mark_sent(12, 3);
+
+        rt.mark_sent(0, 12);
+
+        let mut canon = RangeTracker {
+            acked: 3,
+            ..RangeTracker::default()
+        };
+        canon.used.insert(3, (3, RangeState::Sent));
+        canon.used.insert(6, (3, RangeState::Acked));
+        canon.used.insert(9, (6, RangeState::Sent));
+        assert_eq!(rt, canon);
+    }
+
+    /// Check that `marked_sent` correctly handles all paths.
+    /// ```ignore
+    ///   AAASS AAA S SSSS
+    /// + SSSSSSSSSSSSS
+    /// = AAASSSAAASSSSSSS
+    /// ```
+    #[test]
+    fn mark_sent_2() {
+        let mut rt = RangeTracker::default();
+        rt.mark_acked(0, 3);
+        rt.mark_sent(3, 2);
+        rt.mark_acked(6, 3);
+        rt.mark_sent(10, 1);
+        rt.mark_sent(12, 4);
+
+        rt.mark_sent(0, 13);
+
+        let mut canon = RangeTracker {
+            acked: 3,
+            ..RangeTracker::default()
+        };
+        canon.used.insert(3, (3, RangeState::Sent));
+        canon.used.insert(6, (3, RangeState::Acked));
+        canon.used.insert(9, (7, RangeState::Sent));
+        assert_eq!(rt, canon);
+    }
+
+    /// Check that `marked_sent` correctly handles all paths.
+    /// ```ignore
+    ///   AAA  AAA
+    /// +   SSSS
+    /// = AAASSAAA
+    /// ```
+    #[test]
+    fn mark_sent_3() {
+        let mut rt = RangeTracker::default();
+        rt.mark_acked(0, 3);
+        rt.mark_acked(5, 3);
+
+        rt.mark_sent(2, 4);
+
+        let mut canon = RangeTracker {
+            acked: 3,
+            ..RangeTracker::default()
+        };
+        canon.used.insert(3, (2, RangeState::Sent));
+        canon.used.insert(5, (3, RangeState::Acked));
+        assert_eq!(rt, canon);
+    }
+
+    /// Check that `marked_sent` correctly handles all paths.
+    /// ```ignore
+    ///   SSS  AAA  SS
+    /// +   SSSSSSSS
+    /// = SSSSSAAASSSS
+    /// ```
+    #[test]
+    fn mark_sent_4() {
+        let mut rt = RangeTracker::default();
+        rt.mark_sent(0, 3);
+        rt.mark_acked(5, 3);
+        rt.mark_sent(10, 2);
+
+        rt.mark_sent(2, 8);
+
+        let mut canon = RangeTracker::default();
+        canon.used.insert(0, (5, RangeState::Sent));
+        canon.used.insert(5, (3, RangeState::Acked));
+        canon.used.insert(8, (4, RangeState::Sent));
+        assert_eq!(rt, canon);
+    }
+
+    /// Check that `marked_sent` correctly handles all paths.
+    /// ```ignore
+    ///     AAA
+    /// +   SSSSSS
+    /// =   AAASSS
+    /// ```
+    #[test]
+    fn mark_sent_5() {
+        let mut rt = RangeTracker::default();
+        rt.mark_acked(3, 3);
+
+        rt.mark_sent(3, 6);
+
+        let mut canon = RangeTracker::default();
+        canon.used.insert(3, (3, RangeState::Acked));
+        canon.used.insert(6, (3, RangeState::Sent));
+        assert_eq!(rt, canon);
+    }
+
+    /// Check that `marked_sent` correctly handles all paths.
+    /// ```ignore
+    ///   SSSSS
+    /// +  SSS
+    /// = SSSSS
+    /// ```
+    #[test]
+    fn mark_sent_6() {
+        let mut rt = RangeTracker::default();
+        rt.mark_sent(0, 5);
+
+        rt.mark_sent(1, 3);
+
+        let mut canon = RangeTracker::default();
+        canon.used.insert(0, (5, RangeState::Sent));
+        assert_eq!(rt, canon);
+    }
+
+    #[test]
+    fn unmark_sent_start() {
+        let mut rt = RangeTracker::default();
+
+        rt.mark_sent(0, 5);
+        assert_eq!(rt.highest_offset(), 5);
+        assert_eq!(rt.acked_from_zero(), 0);
+
+        rt.unmark_sent();
+        assert_eq!(rt.highest_offset(), 0);
+        assert_eq!(rt.acked_from_zero(), 0);
+        assert_eq!(rt.first_unmarked_range(), (0, None));
+    }
+
+    #[test]
+    fn unmark_sent_middle() {
+        let mut rt = RangeTracker::default();
+
+        rt.mark_acked(0, 5);
+        assert_eq!(rt.highest_offset(), 5);
+        assert_eq!(rt.acked_from_zero(), 5);
+        rt.mark_sent(5, 5);
+        assert_eq!(rt.highest_offset(), 10);
+        assert_eq!(rt.acked_from_zero(), 5);
+        rt.mark_acked(10, 5);
+        assert_eq!(rt.highest_offset(), 15);
+        assert_eq!(rt.acked_from_zero(), 5);
+        assert_eq!(rt.first_unmarked_range(), (15, None));
+
+        rt.unmark_sent();
+        assert_eq!(rt.highest_offset(), 15);
+        assert_eq!(rt.acked_from_zero(), 5);
+        assert_eq!(rt.first_unmarked_range(), (5, Some(5)));
+    }
+
+    #[test]
+    fn unmark_sent_end() {
+        let mut rt = RangeTracker::default();
+
+        rt.mark_acked(0, 5);
+        assert_eq!(rt.highest_offset(), 5);
+        assert_eq!(rt.acked_from_zero(), 5);
+        rt.mark_sent(5, 5);
+        assert_eq!(rt.highest_offset(), 10);
+        assert_eq!(rt.acked_from_zero(), 5);
+        assert_eq!(rt.first_unmarked_range(), (10, None));
+
+        rt.unmark_sent();
+        assert_eq!(rt.highest_offset(), 5);
+        assert_eq!(rt.acked_from_zero(), 5);
+        assert_eq!(rt.first_unmarked_range(), (5, None));
+    }
+
+    #[test]
+    fn truncate_front() {
+        let mut v = VecDeque::new();
+        v.push_back(5);
+        v.push_back(6);
+        v.push_back(7);
+        v.push_front(4usize);
+
+        v.rotate_left(1);
+        v.truncate(3);
+        assert_eq!(*v.front().unwrap(), 5);
+        assert_eq!(*v.back().unwrap(), 7);
+    }
+
+    #[test]
+    fn unmark_range() {
+        let mut rt = RangeTracker::default();
+
+        rt.mark_acked(5, 5);
+        rt.mark_sent(10, 5);
+
+        // Should unmark sent but not acked range
+        rt.unmark_range(7, 6);
+
+        let res = rt.first_unmarked_range();
+        assert_eq!(res, (0, Some(5)));
+        assert_eq!(
+            rt.used.iter().next().unwrap(),
+            (&5, &(5, RangeState::Acked))
+        );
+        assert_eq!(
+            rt.used.iter().nth(1).unwrap(),
+            (&13, &(2, RangeState::Sent))
+        );
+        assert!(rt.used.iter().nth(2).is_none());
+        rt.mark_sent(0, 5);
+
+        let res = rt.first_unmarked_range();
+        assert_eq!(res, (10, Some(3)));
+        rt.mark_sent(10, 3);
+
+        let res = rt.first_unmarked_range();
+        assert_eq!(res, (15, None));
+    }
+
+    #[test]
+    fn tx_buffer_next_bytes_1() {
+        let mut txb = TxBuffer::new();
+
+        assert_eq!(txb.avail(), SEND_BUFFER_SIZE);
+
+        // Fill the buffer
+        let big_buf = vec![1; SEND_BUFFER_SIZE * 2];
+        assert_eq!(txb.send(&big_buf), SEND_BUFFER_SIZE);
+        assert!(matches!(txb.next_bytes(),
+                         Some((0, x)) if x.len() == SEND_BUFFER_SIZE
+                         && x.iter().all(|ch| *ch == 1)));
+
+        // Mark almost all as sent. Get what's left
+        let one_byte_from_end = SEND_BUFFER_SIZE as u64 - 1;
+        txb.mark_as_sent(0, usize::try_from(one_byte_from_end).unwrap());
+        assert!(matches!(txb.next_bytes(),
+                         Some((start, x)) if x.len() == 1
+                         && start == one_byte_from_end
+                         && x.iter().all(|ch| *ch == 1)));
+
+        // Mark all as sent. Get nothing
+        txb.mark_as_sent(0, SEND_BUFFER_SIZE);
+        assert!(txb.next_bytes().is_none());
+
+        // Mark as lost. Get it again
+        txb.mark_as_lost(one_byte_from_end, 1);
+        assert!(matches!(txb.next_bytes(),
+                         Some((start, x)) if x.len() == 1
+                         && start == one_byte_from_end
+                         && x.iter().all(|ch| *ch == 1)));
+
+        // Mark a larger range lost, including beyond what's in the buffer even.
+        // Get a little more
+        let five_bytes_from_end = SEND_BUFFER_SIZE as u64 - 5;
+        txb.mark_as_lost(five_bytes_from_end, 100);
+        assert!(matches!(txb.next_bytes(),
+                         Some((start, x)) if x.len() == 5
+                         && start == five_bytes_from_end
+                         && x.iter().all(|ch| *ch == 1)));
+
+        // Contig acked range at start means it can be removed from buffer
+        // Impl of vecdeque should now result in a split buffer when more data
+        // is sent
+        txb.mark_as_acked(0, usize::try_from(five_bytes_from_end).unwrap());
+        assert_eq!(txb.send(&[2; 30]), 30);
+        // Just get 5 even though there is more
+        assert!(matches!(txb.next_bytes(),
+                         Some((start, x)) if x.len() == 5
+                         && start == five_bytes_from_end
+                         && x.iter().all(|ch| *ch == 1)));
+        assert_eq!(txb.retired(), five_bytes_from_end);
+        assert_eq!(txb.buffered(), 35);
+
+        // Marking that bit as sent should let the last contig bit be returned
+        // when called again
+        txb.mark_as_sent(five_bytes_from_end, 5);
+        assert!(matches!(txb.next_bytes(),
+                         Some((start, x)) if x.len() == 30
+                         && start == SEND_BUFFER_SIZE as u64
+                         && x.iter().all(|ch| *ch == 2)));
+    }
+
+    #[test]
+    fn tx_buffer_next_bytes_2() {
+        let mut txb = TxBuffer::new();
+
+        assert_eq!(txb.avail(), SEND_BUFFER_SIZE);
+
+        // Fill the buffer
+        let big_buf = vec![1; SEND_BUFFER_SIZE * 2];
+        assert_eq!(txb.send(&big_buf), SEND_BUFFER_SIZE);
+        assert!(matches!(txb.next_bytes(),
+                         Some((0, x)) if x.len()==SEND_BUFFER_SIZE
+                         && x.iter().all(|ch| *ch == 1)));
+
+        // As above
+        let forty_bytes_from_end = SEND_BUFFER_SIZE as u64 - 40;
+
+        txb.mark_as_acked(0, usize::try_from(forty_bytes_from_end).unwrap());
+        assert!(matches!(txb.next_bytes(),
+                 Some((start, x)) if x.len() == 40
+                 && start == forty_bytes_from_end
+        ));
+
+        // Valid new data placed in split locations
+        assert_eq!(txb.send(&[2; 100]), 100);
+
+        // Mark a little more as sent
+        txb.mark_as_sent(forty_bytes_from_end, 10);
+        let thirty_bytes_from_end = forty_bytes_from_end + 10;
+        assert!(matches!(txb.next_bytes(),
+                         Some((start, x)) if x.len() == 30
+                         && start == thirty_bytes_from_end
+                         && x.iter().all(|ch| *ch == 1)));
+
+        // Mark a range 'A' in second slice as sent. Should still return the same
+        let range_a_start = SEND_BUFFER_SIZE as u64 + 30;
+        let range_a_end = range_a_start + 10;
+        txb.mark_as_sent(range_a_start, 10);
+        assert!(matches!(txb.next_bytes(),
+                         Some((start, x)) if x.len() == 30
+                         && start == thirty_bytes_from_end
+                         && x.iter().all(|ch| *ch == 1)));
+
+        // Ack entire first slice and into second slice
+        let ten_bytes_past_end = SEND_BUFFER_SIZE as u64 + 10;
+        txb.mark_as_acked(0, usize::try_from(ten_bytes_past_end).unwrap());
+
+        // Get up to marked range A
+        assert!(matches!(txb.next_bytes(),
+                         Some((start, x)) if x.len() == 20
+                         && start == ten_bytes_past_end
+                         && x.iter().all(|ch| *ch == 2)));
+
+        txb.mark_as_sent(ten_bytes_past_end, 20);
+
+        // Get bit after earlier marked range A
+        assert!(matches!(txb.next_bytes(),
+                         Some((start, x)) if x.len() == 60
+                         && start == range_a_end
+                         && x.iter().all(|ch| *ch == 2)));
+
+        // No more bytes.
+        txb.mark_as_sent(range_a_end, 60);
+        assert!(txb.next_bytes().is_none());
+    }
+
+    #[test]
+    fn stream_tx() {
+        let conn_fc = connection_fc(4096);
+        let conn_events = ConnectionEvents::default();
+
+        let mut s = SendStream::new(4.into(), 1024, Rc::clone(&conn_fc), conn_events);
+
+        let res = s.send(&[4; 100]).unwrap();
+        assert_eq!(res, 100);
+        s.mark_as_sent(0, 50, false);
+        if let SendStreamState::Send { fc, .. } = s.state() {
+            assert_eq!(fc.used(), 100);
+        } else {
+            panic!("unexpected stream state");
+        }
+
+        // Should hit stream flow control limit before filling up send buffer
+        let big_buf = vec![4; SEND_BUFFER_SIZE + 100];
+        let res = s.send(&big_buf[..SEND_BUFFER_SIZE]).unwrap();
+        assert_eq!(res, 1024 - 100);
+
+        // should do nothing, max stream data already 1024
+        s.set_max_stream_data(1024);
+        let res = s.send(&big_buf[..SEND_BUFFER_SIZE]).unwrap();
+        assert_eq!(res, 0);
+
+        // should now hit the conn flow control (4096)
+        s.set_max_stream_data(1_048_576);
+        let res = s.send(&big_buf[..SEND_BUFFER_SIZE]).unwrap();
+        assert_eq!(res, 3072);
+
+        // should now hit the tx buffer size
+        conn_fc.borrow_mut().update(SEND_BUFFER_SIZE as u64);
+        let res = s.send(&big_buf).unwrap();
+        assert_eq!(res, SEND_BUFFER_SIZE - 4096);
+
+        // TODO(agrover@mozilla.com): test ooo acks somehow
+        s.mark_as_acked(0, 40, false);
+    }
+
+    #[test]
+    fn tx_buffer_acks() {
+        let mut tx = TxBuffer::new();
+        assert_eq!(tx.send(&[4; 100]), 100);
+        let res = tx.next_bytes().unwrap();
+        assert_eq!(res.0, 0);
+        assert_eq!(res.1.len(), 100);
+        tx.mark_as_sent(0, 100);
+        let res = tx.next_bytes();
+        assert_eq!(res, None);
+
+        tx.mark_as_acked(0, 100);
+        let res = tx.next_bytes();
+        assert_eq!(res, None);
+    }
+
+    #[test]
+    fn send_stream_writable_event_gen() {
+        let conn_fc = connection_fc(2);
+        let mut conn_events = ConnectionEvents::default();
+
+        let mut s = SendStream::new(4.into(), 0, Rc::clone(&conn_fc), conn_events.clone());
+
+        // Stream is initially blocked (conn:2, stream:0)
+        // and will not accept data.
+        assert_eq!(s.send(b"hi").unwrap(), 0);
+
+        // increasing to (conn:2, stream:2) will allow 2 bytes, and also
+        // generate a SendStreamWritable event.
+        s.set_max_stream_data(2);
+        let evts = conn_events.events().collect::<Vec<_>>();
+        assert_eq!(evts.len(), 1);
+        assert!(matches!(
+            evts[0],
+            ConnectionEvent::SendStreamWritable { .. }
+        ));
+        assert_eq!(s.send(b"hello").unwrap(), 2);
+
+        // increasing to (conn:2, stream:4) will not generate an event or allow
+        // sending anything.
+        s.set_max_stream_data(4);
+        assert_eq!(conn_events.events().count(), 0);
+        assert_eq!(s.send(b"hello").unwrap(), 0);
+
+        // Increasing conn max (conn:4, stream:4) will unblock but not emit
+        // event b/c that happens in Connection::emit_frame() (tested in
+        // connection.rs)
+        assert!(conn_fc.borrow_mut().update(4).is_some());
+        assert_eq!(conn_events.events().count(), 0);
+        assert_eq!(s.avail(), 2);
+        assert_eq!(s.send(b"hello").unwrap(), 2);
+
+        // No event because still blocked by conn
+        s.set_max_stream_data(1_000_000_000);
+        assert_eq!(conn_events.events().count(), 0);
+
+        // No event because happens in emit_frame()
+        conn_fc.borrow_mut().update(1_000_000_000);
+        assert_eq!(conn_events.events().count(), 0);
+
+        // Unblocking both by a large amount will cause avail() to be limited by
+        // tx buffer size.
+        assert_eq!(s.avail(), SEND_BUFFER_SIZE - 4);
+
+        let big_buf = vec![b'a'; SEND_BUFFER_SIZE];
+        assert_eq!(s.send(&big_buf).unwrap(), SEND_BUFFER_SIZE - 4);
+
+        // No event because still blocked by tx buffer full
+        s.set_max_stream_data(2_000_000_000);
+        assert_eq!(conn_events.events().count(), 0);
+        assert_eq!(s.send(b"hello").unwrap(), 0);
+    }
+
+    #[test]
+    fn send_stream_writable_event_gen_with_watermark() {
+        let conn_fc = connection_fc(0);
+        let mut conn_events = ConnectionEvents::default();
+
+        let mut s = SendStream::new(4.into(), 0, Rc::clone(&conn_fc), conn_events.clone());
+        // Set watermark at 3.
+        s.set_writable_event_low_watermark(NonZeroUsize::new(3).unwrap());
+
+        // Stream is initially blocked (conn:0, stream:0, watermark: 3) and will
+        // not accept data.
+        assert_eq!(s.avail(), 0);
+        assert_eq!(s.send(b"hi!").unwrap(), 0);
+
+        // Increasing the connection limit (conn:10, stream:0, watermark: 3) will not generate
+        // event or allow sending anything. Stream is constrained by stream limit.
+        assert!(conn_fc.borrow_mut().update(10).is_some());
+        assert_eq!(s.avail(), 0);
+        assert_eq!(conn_events.events().count(), 0);
+
+        // Increasing the connection limit further (conn:11, stream:0, watermark: 3) will not
+        // generate event or allow sending anything. Stream wasn't constrained by connection
+        // limit before.
+        assert!(conn_fc.borrow_mut().update(11).is_some());
+        assert_eq!(s.avail(), 0);
+        assert_eq!(conn_events.events().count(), 0);
+
+        // Increasing to (conn:11, stream:2, watermark: 3) will allow 2 bytes
+        // but not generate a SendStreamWritable event as it is still below the
+        // configured watermark.
+        s.set_max_stream_data(2);
+        assert_eq!(conn_events.events().count(), 0);
+        assert_eq!(s.avail(), 2);
+
+        // Increasing to (conn:11, stream:3, watermark: 3) will generate an
+        // event as available sendable bytes are >= watermark.
+        s.set_max_stream_data(3);
+        let evts = conn_events.events().collect::<Vec<_>>();
+        assert_eq!(evts.len(), 1);
+        assert!(matches!(
+            evts[0],
+            ConnectionEvent::SendStreamWritable { .. }
+        ));
+
+        assert_eq!(s.send(b"hi!").unwrap(), 3);
+    }
+
+    #[test]
+    fn send_stream_writable_event_new_stream() {
+        let conn_fc = connection_fc(2);
+        let mut conn_events = ConnectionEvents::default();
+
+        let _s = SendStream::new(4.into(), 100, conn_fc, conn_events.clone());
+
+        // Creating a new stream with conn and stream credits should result in
+        // an event.
+        let evts = conn_events.events().collect::<Vec<_>>();
+        assert_eq!(evts.len(), 1);
+        assert!(matches!(
+            evts[0],
+            ConnectionEvent::SendStreamWritable { .. }
+        ));
+    }
+
+    const fn as_stream_token(t: &RecoveryToken) -> &SendStreamRecoveryToken {
+        if let RecoveryToken::Stream(StreamRecoveryToken::Stream(rt)) = &t {
+            rt
+        } else {
+            panic!();
+        }
+    }
+
+    #[test]
+    // Verify lost frames handle fin properly
+    fn send_stream_get_frame_data() {
+        let conn_fc = connection_fc(100);
+        let conn_events = ConnectionEvents::default();
+
+        let mut s = SendStream::new(0.into(), 100, conn_fc, conn_events);
+        s.send(&[0; 10]).unwrap();
+        s.close();
+
+        let mut ss = SendStreams::default();
+        ss.insert(StreamId::from(0), s);
+
+        let mut tokens = Vec::new();
+        let mut builder = PacketBuilder::short(Encoder::new(), false, None::<&[u8]>);
+
+        // Write a small frame: no fin.
+        let written = builder.len();
+        builder.set_limit(written + 6);
+        ss.write_frames(
+            TransmissionPriority::default(),
+            &mut builder,
+            &mut tokens,
+            &mut FrameStats::default(),
+        );
+        assert_eq!(builder.len(), written + 6);
+        assert_eq!(tokens.len(), 1);
+        let f1_token = tokens.remove(0);
+        assert!(!as_stream_token(&f1_token).fin);
+
+        // Write the rest: fin.
+        let written = builder.len();
+        builder.set_limit(written + 200);
+        ss.write_frames(
+            TransmissionPriority::default(),
+            &mut builder,
+            &mut tokens,
+            &mut FrameStats::default(),
+        );
+        assert_eq!(builder.len(), written + 10);
+        assert_eq!(tokens.len(), 1);
+        let f2_token = tokens.remove(0);
+        assert!(as_stream_token(&f2_token).fin);
+
+        // Should be no more data to frame.
+        let written = builder.len();
+        ss.write_frames(
+            TransmissionPriority::default(),
+            &mut builder,
+            &mut tokens,
+            &mut FrameStats::default(),
+        );
+        assert_eq!(builder.len(), written);
+        assert!(tokens.is_empty());
+
+        // Mark frame 1 as lost
+        ss.lost(as_stream_token(&f1_token));
+
+        // Next frame should not set fin even though stream has fin but frame
+        // does not include end of stream
+        let written = builder.len();
+        ss.write_frames(
+            TransmissionPriority::default() + RetransmissionPriority::default(),
+            &mut builder,
+            &mut tokens,
+            &mut FrameStats::default(),
+        );
+        assert_eq!(builder.len(), written + 7); // Needs a length this time.
+        assert_eq!(tokens.len(), 1);
+        let f4_token = tokens.remove(0);
+        assert!(!as_stream_token(&f4_token).fin);
+
+        // Mark frame 2 as lost
+        ss.lost(as_stream_token(&f2_token));
+
+        // Next frame should set fin because it includes end of stream
+        let written = builder.len();
+        ss.write_frames(
+            TransmissionPriority::default() + RetransmissionPriority::default(),
+            &mut builder,
+            &mut tokens,
+            &mut FrameStats::default(),
+        );
+        assert_eq!(builder.len(), written + 10);
+        assert_eq!(tokens.len(), 1);
+        let f5_token = tokens.remove(0);
+        assert!(as_stream_token(&f5_token).fin);
+    }
+
+    #[test]
+    // Verify lost frames handle fin properly with zero length fin
+    fn send_stream_get_frame_zerolength_fin() {
+        let conn_fc = connection_fc(100);
+        let conn_events = ConnectionEvents::default();
+
+        let mut s = SendStream::new(0.into(), 100, conn_fc, conn_events);
+        s.send(&[0; 10]).unwrap();
+
+        let mut ss = SendStreams::default();
+        ss.insert(StreamId::from(0), s);
+
+        let mut tokens = Vec::new();
+        let mut builder = PacketBuilder::short(Encoder::new(), false, None::<&[u8]>);
+        ss.write_frames(
+            TransmissionPriority::default(),
+            &mut builder,
+            &mut tokens,
+            &mut FrameStats::default(),
+        );
+        let f1_token = tokens.remove(0);
+        assert_eq!(as_stream_token(&f1_token).offset, 0);
+        assert_eq!(as_stream_token(&f1_token).length, 10);
+        assert!(!as_stream_token(&f1_token).fin);
+
+        // Should be no more data to frame
+        ss.write_frames(
+            TransmissionPriority::default(),
+            &mut builder,
+            &mut tokens,
+            &mut FrameStats::default(),
+        );
+        assert!(tokens.is_empty());
+
+        ss.get_mut(StreamId::from(0)).unwrap().close();
+
+        ss.write_frames(
+            TransmissionPriority::default(),
+            &mut builder,
+            &mut tokens,
+            &mut FrameStats::default(),
+        );
+        let f2_token = tokens.remove(0);
+        assert_eq!(as_stream_token(&f2_token).offset, 10);
+        assert_eq!(as_stream_token(&f2_token).length, 0);
+        assert!(as_stream_token(&f2_token).fin);
+
+        // Mark frame 2 as lost
+        ss.lost(as_stream_token(&f2_token));
+
+        // Next frame should set fin
+        ss.write_frames(
+            TransmissionPriority::default(),
+            &mut builder,
+            &mut tokens,
+            &mut FrameStats::default(),
+        );
+        let f3_token = tokens.remove(0);
+        assert_eq!(as_stream_token(&f3_token).offset, 10);
+        assert_eq!(as_stream_token(&f3_token).length, 0);
+        assert!(as_stream_token(&f3_token).fin);
+
+        // Mark frame 1 as lost
+        ss.lost(as_stream_token(&f1_token));
+
+        // Next frame should set fin and include all data
+        ss.write_frames(
+            TransmissionPriority::default(),
+            &mut builder,
+            &mut tokens,
+            &mut FrameStats::default(),
+        );
+        let f4_token = tokens.remove(0);
+        assert_eq!(as_stream_token(&f4_token).offset, 0);
+        assert_eq!(as_stream_token(&f4_token).length, 10);
+        assert!(as_stream_token(&f4_token).fin);
+    }
+
+    #[test]
+    fn data_blocked() {
+        let conn_fc = connection_fc(5);
+        let conn_events = ConnectionEvents::default();
+
+        let stream_id = StreamId::from(4);
+        let mut s = SendStream::new(stream_id, 2, Rc::clone(&conn_fc), conn_events);
+
+        // Only two bytes can be sent due to the stream limit.
+        assert_eq!(s.send(b"abc").unwrap(), 2);
+        assert_eq!(s.next_bytes(false), Some((0, &b"ab"[..])));
+
+        // This doesn't report blocking yet.
+        let mut builder = PacketBuilder::short(Encoder::new(), false, None::<&[u8]>);
+        let mut tokens = Vec::new();
+        let mut stats = FrameStats::default();
+        s.write_blocked_frame(
+            TransmissionPriority::default(),
+            &mut builder,
+            &mut tokens,
+            &mut stats,
+        );
+        assert_eq!(stats.stream_data_blocked, 0);
+
+        // Blocking is reported after sending the last available credit.
+        s.mark_as_sent(0, 2, false);
+        s.write_blocked_frame(
+            TransmissionPriority::default(),
+            &mut builder,
+            &mut tokens,
+            &mut stats,
+        );
+        assert_eq!(stats.stream_data_blocked, 1);
+
+        // Now increase the stream limit and test the connection limit.
+        s.set_max_stream_data(10);
+
+        assert_eq!(s.send(b"abcd").unwrap(), 3);
+        assert_eq!(s.next_bytes(false), Some((2, &b"abc"[..])));
+        // DATA_BLOCKED is not sent yet.
+        conn_fc
+            .borrow_mut()
+            .write_frames(&mut builder, &mut tokens, &mut stats);
+        assert_eq!(stats.data_blocked, 0);
+
+        // DATA_BLOCKED is queued once bytes using all credit are sent.
+        s.mark_as_sent(2, 3, false);
+        conn_fc
+            .borrow_mut()
+            .write_frames(&mut builder, &mut tokens, &mut stats);
+        assert_eq!(stats.data_blocked, 1);
+    }
+
+    #[test]
+    fn data_blocked_atomic() {
+        let conn_fc = connection_fc(5);
+        let conn_events = ConnectionEvents::default();
+
+        let stream_id = StreamId::from(4);
+        let mut s = SendStream::new(stream_id, 2, Rc::clone(&conn_fc), conn_events);
+
+        // Stream is initially blocked (conn:5, stream:2)
+        // and will not accept atomic write of 3 bytes.
+        assert_eq!(s.send_atomic(b"abc").unwrap(), 0);
+
+        // Assert that STREAM_DATA_BLOCKED is sent.
+        let mut builder = PacketBuilder::short(Encoder::new(), false, None::<&[u8]>);
+        let mut tokens = Vec::new();
+        let mut stats = FrameStats::default();
+        s.write_blocked_frame(
+            TransmissionPriority::default(),
+            &mut builder,
+            &mut tokens,
+            &mut stats,
+        );
+        assert_eq!(stats.stream_data_blocked, 1);
+
+        // Assert that a non-atomic write works.
+        assert_eq!(s.send(b"abc").unwrap(), 2);
+        assert_eq!(s.next_bytes(false), Some((0, &b"ab"[..])));
+        s.mark_as_sent(0, 2, false);
+
+        // Set limits to (conn:5, stream:10).
+        s.set_max_stream_data(10);
+
+        // An atomic write of 4 bytes exceeds the remaining limit of 3.
+        assert_eq!(s.send_atomic(b"abcd").unwrap(), 0);
+
+        // Assert that DATA_BLOCKED is sent.
+        conn_fc
+            .borrow_mut()
+            .write_frames(&mut builder, &mut tokens, &mut stats);
+        assert_eq!(stats.data_blocked, 1);
+
+        // Check that a non-atomic write works.
+        assert_eq!(s.send(b"abcd").unwrap(), 3);
+        assert_eq!(s.next_bytes(false), Some((2, &b"abc"[..])));
+        s.mark_as_sent(2, 3, false);
+
+        // Increase limits to (conn:15, stream:15).
+        s.set_max_stream_data(15);
+        conn_fc.borrow_mut().update(15);
+
+        // Check that atomic writing right up to the limit works.
+        assert_eq!(s.send_atomic(b"abcdefghij").unwrap(), 10);
+    }
+
+    #[test]
+    fn ack_fin_first() {
+        const MESSAGE: &[u8] = b"hello";
+        let len_u64 = u64::try_from(MESSAGE.len()).unwrap();
+
+        let conn_fc = connection_fc(len_u64);
+        let conn_events = ConnectionEvents::default();
+
+        let mut s = SendStream::new(StreamId::new(100), 0, conn_fc, conn_events);
+        s.set_max_stream_data(len_u64);
+
+        // Send all the data, then the fin.
+        _ = s.send(MESSAGE).unwrap();
+        s.mark_as_sent(0, MESSAGE.len(), false);
+        s.close();
+        s.mark_as_sent(len_u64, 0, true);
+
+        // Ack the fin, then the data.
+        s.mark_as_acked(len_u64, 0, true);
+        s.mark_as_acked(0, MESSAGE.len(), false);
+        assert!(s.is_terminal());
+    }
+
+    #[test]
+    fn ack_then_lose_fin() {
+        const MESSAGE: &[u8] = b"hello";
+        let len_u64 = u64::try_from(MESSAGE.len()).unwrap();
+
+        let conn_fc = connection_fc(len_u64);
+        let conn_events = ConnectionEvents::default();
+
+        let id = StreamId::new(100);
+        let mut s = SendStream::new(id, 0, conn_fc, conn_events);
+        s.set_max_stream_data(len_u64);
+
+        // Send all the data, then the fin.
+        _ = s.send(MESSAGE).unwrap();
+        s.mark_as_sent(0, MESSAGE.len(), false);
+        s.close();
+        s.mark_as_sent(len_u64, 0, true);
+
+        // Ack the fin, then mark it lost.
+        s.mark_as_acked(len_u64, 0, true);
+        s.mark_as_lost(len_u64, 0, true);
+
+        // No frame should be sent here.
+        let mut builder = PacketBuilder::short(Encoder::new(), false, None::<&[u8]>);
+        let mut tokens = Vec::new();
+        let mut stats = FrameStats::default();
+        s.write_stream_frame(
+            TransmissionPriority::default(),
+            &mut builder,
+            &mut tokens,
+            &mut stats,
+        );
+        assert_eq!(stats.stream, 0);
+    }
+
+    /// Create a `SendStream` and force it into a state where it believes that
+    /// `offset` bytes have already been sent and acknowledged.
+    fn stream_with_sent(stream: u64, offset: usize) -> SendStream {
+        const MAX_VARINT: u64 = (1 << 62) - 1;
+
+        let conn_fc = connection_fc(MAX_VARINT);
+        let mut s = SendStream::new(
+            StreamId::from(stream),
+            MAX_VARINT,
+            conn_fc,
+            ConnectionEvents::default(),
+        );
+
+        let mut send_buf = TxBuffer::new();
+        send_buf.ranges.mark_acked(0, offset);
+        let mut fc = SenderFlowControl::new(StreamId::from(stream), MAX_VARINT);
+        fc.consume(offset);
+        let conn_fc = Rc::new(RefCell::new(SenderFlowControl::new((), MAX_VARINT)));
+        s.state = SendStreamState::Send {
+            fc,
+            conn_fc,
+            send_buf,
+        };
+        s
+    }
+
+    fn frame_sent_sid(stream: u64, offset: usize, len: usize, fin: bool, space: usize) -> bool {
+        const BUF: &[u8] = &[0x42; 128];
+
+        qtrace!(
+            "frame_sent stream={} offset={} len={} fin={}, space={}",
+            stream,
+            offset,
+            len,
+            fin,
+            space
+        );
+
+        let mut s = stream_with_sent(stream, offset);
+
+        // Now write out the proscribed data and maybe close.
+        if len > 0 {
+            s.send(&BUF[..len]).unwrap();
+        }
+        if fin {
+            s.close();
+        }
+
+        let mut builder = PacketBuilder::short(Encoder::new(), false, None::<&[u8]>);
+        let header_len = builder.len();
+        builder.set_limit(header_len + space);
+
+        let mut tokens = Vec::new();
+        let mut stats = FrameStats::default();
+        s.write_stream_frame(
+            TransmissionPriority::default(),
+            &mut builder,
+            &mut tokens,
+            &mut stats,
+        );
+        qtrace!(
+            "STREAM frame: {}",
+            hex_with_len(&builder.as_ref()[header_len..])
+        );
+        stats.stream > 0
+    }
+
+    fn frame_sent(offset: usize, len: usize, fin: bool, space: usize) -> bool {
+        frame_sent_sid(0, offset, len, fin, space)
+    }
+
+    #[test]
+    fn stream_frame_empty() {
+        // Stream frames with empty data and no fin never work.
+        assert!(!frame_sent(10, 0, false, 2));
+        assert!(!frame_sent(10, 0, false, 3));
+        assert!(!frame_sent(10, 0, false, 4));
+        assert!(!frame_sent(10, 0, false, 5));
+        assert!(!frame_sent(10, 0, false, 100));
+
+        // Empty data with fin is only a problem if there is no space.
+        assert!(!frame_sent(0, 0, true, 1));
+        assert!(frame_sent(0, 0, true, 2));
+        assert!(!frame_sent(10, 0, true, 2));
+        assert!(frame_sent(10, 0, true, 3));
+        assert!(frame_sent(10, 0, true, 4));
+        assert!(frame_sent(10, 0, true, 5));
+        assert!(frame_sent(10, 0, true, 100));
+    }
+
+    #[test]
+    fn stream_frame_minimum() {
+        // Add minimum data
+        assert!(!frame_sent(10, 1, false, 3));
+        assert!(!frame_sent(10, 1, true, 3));
+        assert!(frame_sent(10, 1, false, 4));
+        assert!(frame_sent(10, 1, true, 4));
+        assert!(frame_sent(10, 1, false, 5));
+        assert!(frame_sent(10, 1, true, 5));
+        assert!(frame_sent(10, 1, false, 100));
+        assert!(frame_sent(10, 1, true, 100));
+    }
+
+    #[test]
+    fn stream_frame_more() {
+        // Try more data
+        assert!(!frame_sent(10, 100, false, 3));
+        assert!(!frame_sent(10, 100, true, 3));
+        assert!(frame_sent(10, 100, false, 4));
+        assert!(frame_sent(10, 100, true, 4));
+        assert!(frame_sent(10, 100, false, 5));
+        assert!(frame_sent(10, 100, true, 5));
+        assert!(frame_sent(10, 100, false, 100));
+        assert!(frame_sent(10, 100, true, 100));
+
+        assert!(frame_sent(10, 100, false, 1000));
+        assert!(frame_sent(10, 100, true, 1000));
+    }
+
+    #[test]
+    fn stream_frame_big_id() {
+        // A value that encodes to the largest varint.
+        const BIG: u64 = 1 << 30;
+        const BIGSZ: usize = 1 << 30;
+
+        assert!(!frame_sent_sid(BIG, BIGSZ, 0, false, 16));
+        assert!(!frame_sent_sid(BIG, BIGSZ, 0, true, 16));
+        assert!(!frame_sent_sid(BIG, BIGSZ, 0, false, 17));
+        assert!(frame_sent_sid(BIG, BIGSZ, 0, true, 17));
+        assert!(!frame_sent_sid(BIG, BIGSZ, 0, false, 18));
+        assert!(frame_sent_sid(BIG, BIGSZ, 0, true, 18));
+
+        assert!(!frame_sent_sid(BIG, BIGSZ, 1, false, 17));
+        assert!(!frame_sent_sid(BIG, BIGSZ, 1, true, 17));
+        assert!(frame_sent_sid(BIG, BIGSZ, 1, false, 18));
+        assert!(frame_sent_sid(BIG, BIGSZ, 1, true, 18));
+        assert!(frame_sent_sid(BIG, BIGSZ, 1, false, 19));
+        assert!(frame_sent_sid(BIG, BIGSZ, 1, true, 19));
+        assert!(frame_sent_sid(BIG, BIGSZ, 1, false, 100));
+        assert!(frame_sent_sid(BIG, BIGSZ, 1, true, 100));
+    }
+
+    fn stream_frame_at_boundary(data: &[u8]) {
+        fn send_with_extra_capacity(data: &[u8], extra: usize, expect_full: bool) -> Vec<u8> {
+            qtrace!("send_with_extra_capacity {} + {}", data.len(), extra);
+            let mut s = stream_with_sent(0, 0);
+            s.send(data).unwrap();
+            s.close();
+
+            let mut builder = PacketBuilder::short(Encoder::new(), false, None::<&[u8]>);
+            let header_len = builder.len();
+            // Add 2 for the frame type and stream ID, then add the extra.
+            builder.set_limit(header_len + data.len() + 2 + extra);
+            let mut tokens = Vec::new();
+            let mut stats = FrameStats::default();
+            s.write_stream_frame(
+                TransmissionPriority::default(),
+                &mut builder,
+                &mut tokens,
+                &mut stats,
+            );
+            assert_eq!(stats.stream, 1);
+            assert_eq!(builder.is_full(), expect_full);
+            Vec::from(Encoder::from(builder)).split_off(header_len)
+        }
+
+        // The minimum amount of extra space for getting another frame in.
+        let mut enc = Encoder::new();
+        enc.encode_varint(u64::try_from(data.len()).unwrap());
+        let len_buf = Vec::from(enc);
+        let minimum_extra = len_buf.len() + PacketBuilder::MINIMUM_FRAME_SIZE;
+
+        // For anything short of the minimum extra, the frame should fill the packet.
+        for i in 0..minimum_extra {
+            let frame = send_with_extra_capacity(data, i, true);
+            let (header, body) = frame.split_at(2);
+            assert_eq!(header, &[0b1001, 0]);
+            assert_eq!(body, data);
+        }
+
+        // Once there is space for another packet AND a length field,
+        // then a length will be added.
+        let frame = send_with_extra_capacity(data, minimum_extra, false);
+        let (header, rest) = frame.split_at(2);
+        assert_eq!(header, &[0b1011, 0]);
+        let (len, body) = rest.split_at(len_buf.len());
+        assert_eq!(len, &len_buf);
+        assert_eq!(body, data);
+    }
+
+    /// 16383/16384 is an odd boundary in STREAM frame construction.
+    /// That is the boundary where a length goes from 2 bytes to 4 bytes.
+    /// Test that we correctly add a length field to the frame; and test
+    /// that if we don't, then we don't allow other frames to be added.
+    #[test]
+    fn stream_frame_16384() {
+        stream_frame_at_boundary(&[4; 16383]);
+        stream_frame_at_boundary(&[4; 16384]);
+    }
+
+    /// 63/64 is the other odd boundary.
+    #[test]
+    fn stream_frame_64() {
+        stream_frame_at_boundary(&[2; 63]);
+        stream_frame_at_boundary(&[2; 64]);
+    }
+
+    fn check_stats(
+        stream: &SendStream,
+        expected_written: u64,
+        expected_sent: u64,
+        expected_acked: u64,
+    ) {
+        let stream_stats = stream.stats();
+        assert_eq!(stream_stats.bytes_written(), expected_written);
+        assert_eq!(stream_stats.bytes_sent(), expected_sent);
+        assert_eq!(stream_stats.bytes_acked(), expected_acked);
+    }
+
+    #[test]
+    fn send_stream_stats() {
+        const MESSAGE: &[u8] = b"hello";
+        let len_u64 = u64::try_from(MESSAGE.len()).unwrap();
+
+        let conn_fc = connection_fc(len_u64);
+        let conn_events = ConnectionEvents::default();
+
+        let id = StreamId::new(100);
+        let mut s = SendStream::new(id, 0, conn_fc, conn_events);
+        s.set_max_stream_data(len_u64);
+
+        // Initial stats should be all 0.
+        check_stats(&s, 0, 0, 0);
+        // Adter sending the data, bytes_written should be increased.
+        _ = s.send(MESSAGE).unwrap();
+        check_stats(&s, len_u64, 0, 0);
+
+        // Adter calling mark_as_sent, bytes_sent should be increased.
+        s.mark_as_sent(0, MESSAGE.len(), false);
+        check_stats(&s, len_u64, len_u64, 0);
+
+        s.close();
+        s.mark_as_sent(len_u64, 0, true);
+
+        // In the end, check bytes_acked.
+        s.mark_as_acked(0, MESSAGE.len(), false);
+        check_stats(&s, len_u64, len_u64, len_u64);
+
+        s.mark_as_acked(len_u64, 0, true);
+        assert!(s.is_terminal());
+    }
+}

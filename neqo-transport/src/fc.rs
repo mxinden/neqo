@@ -573,3 +573,346 @@ impl IndexMut<StreamType> for LocalStreamLimits {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use neqo_common::{Encoder, Role};
+
+    use super::{LocalStreamLimits, ReceiverFlowControl, RemoteStreamLimits, SenderFlowControl};
+    use crate::{
+        packet::PacketBuilder,
+        stats::FrameStats,
+        stream_id::{StreamId, StreamType},
+        Error,
+    };
+
+    #[test]
+    fn blocked_at_zero() {
+        let mut fc = SenderFlowControl::new((), 0);
+        fc.blocked();
+        assert_eq!(fc.blocked_needed(), Some(0));
+    }
+
+    #[test]
+    fn blocked() {
+        let mut fc = SenderFlowControl::new((), 10);
+        fc.blocked();
+        assert_eq!(fc.blocked_needed(), Some(10));
+    }
+
+    #[test]
+    fn update_consume() {
+        let mut fc = SenderFlowControl::new((), 10);
+        fc.consume(10);
+        assert_eq!(fc.available(), 0);
+        fc.update(5); // An update lower than the current limit does nothing.
+        assert_eq!(fc.available(), 0);
+        fc.update(15);
+        assert_eq!(fc.available(), 5);
+        fc.consume(3);
+        assert_eq!(fc.available(), 2);
+    }
+
+    #[test]
+    fn update_clears_blocked() {
+        let mut fc = SenderFlowControl::new((), 10);
+        fc.blocked();
+        assert_eq!(fc.blocked_needed(), Some(10));
+        fc.update(5); // An update lower than the current limit does nothing.
+        assert_eq!(fc.blocked_needed(), Some(10));
+        fc.update(11);
+        assert_eq!(fc.blocked_needed(), None);
+    }
+
+    #[test]
+    fn lost_blocked_resent() {
+        let mut fc = SenderFlowControl::new((), 10);
+        fc.blocked();
+        fc.blocked_sent();
+        assert_eq!(fc.blocked_needed(), None);
+        fc.frame_lost(10);
+        assert_eq!(fc.blocked_needed(), Some(10));
+    }
+
+    #[test]
+    fn lost_after_increase() {
+        let mut fc = SenderFlowControl::new((), 10);
+        fc.blocked();
+        fc.blocked_sent();
+        assert_eq!(fc.blocked_needed(), None);
+        fc.update(11);
+        fc.frame_lost(10);
+        assert_eq!(fc.blocked_needed(), None);
+    }
+
+    #[test]
+    fn lost_after_higher_blocked() {
+        let mut fc = SenderFlowControl::new((), 10);
+        fc.blocked();
+        fc.blocked_sent();
+        fc.update(11);
+        fc.blocked();
+        assert_eq!(fc.blocked_needed(), Some(11));
+        fc.blocked_sent();
+        fc.frame_lost(10);
+        assert_eq!(fc.blocked_needed(), None);
+    }
+
+    #[test]
+    fn do_no_need_max_allowed_frame_at_start() {
+        let fc = ReceiverFlowControl::new((), 0);
+        assert!(!fc.frame_needed());
+    }
+
+    #[test]
+    fn max_allowed_after_items_retired() {
+        let mut fc = ReceiverFlowControl::new((), 100);
+        fc.retire(49);
+        assert!(!fc.frame_needed());
+        fc.retire(51);
+        assert!(fc.frame_needed());
+        assert_eq!(fc.next_limit(), 151);
+    }
+
+    #[test]
+    fn need_max_allowed_frame_after_loss() {
+        let mut fc = ReceiverFlowControl::new((), 100);
+        fc.retire(100);
+        assert!(fc.frame_needed());
+        assert_eq!(fc.next_limit(), 200);
+        fc.frame_sent(200);
+        assert!(!fc.frame_needed());
+        fc.frame_lost(200);
+        assert!(fc.frame_needed());
+        assert_eq!(fc.next_limit(), 200);
+    }
+
+    #[test]
+    fn no_max_allowed_frame_after_old_loss() {
+        let mut fc = ReceiverFlowControl::new((), 100);
+        fc.retire(51);
+        assert!(fc.frame_needed());
+        assert_eq!(fc.next_limit(), 151);
+        fc.frame_sent(151);
+        assert!(!fc.frame_needed());
+        fc.retire(102);
+        assert!(fc.frame_needed());
+        assert_eq!(fc.next_limit(), 202);
+        fc.frame_sent(202);
+        assert!(!fc.frame_needed());
+        fc.frame_lost(151);
+        assert!(!fc.frame_needed());
+    }
+
+    #[test]
+    fn force_send_max_allowed() {
+        let mut fc = ReceiverFlowControl::new((), 100);
+        fc.retire(10);
+        assert!(!fc.frame_needed());
+    }
+
+    #[test]
+    fn multiple_retries_after_frame_pending_is_set() {
+        let mut fc = ReceiverFlowControl::new((), 100);
+        fc.retire(51);
+        assert!(fc.frame_needed());
+        assert_eq!(fc.next_limit(), 151);
+        fc.retire(61);
+        assert!(fc.frame_needed());
+        assert_eq!(fc.next_limit(), 161);
+        fc.retire(88);
+        assert!(fc.frame_needed());
+        assert_eq!(fc.next_limit(), 188);
+        fc.retire(90);
+        assert!(fc.frame_needed());
+        assert_eq!(fc.next_limit(), 190);
+        fc.frame_sent(190);
+        assert!(!fc.frame_needed());
+        fc.retire(141);
+        assert!(fc.frame_needed());
+        assert_eq!(fc.next_limit(), 241);
+        fc.frame_sent(241);
+        assert!(!fc.frame_needed());
+    }
+
+    #[test]
+    fn new_retired_before_loss() {
+        let mut fc = ReceiverFlowControl::new((), 100);
+        fc.retire(51);
+        assert!(fc.frame_needed());
+        assert_eq!(fc.next_limit(), 151);
+        fc.frame_sent(151);
+        assert!(!fc.frame_needed());
+        fc.retire(62);
+        assert!(!fc.frame_needed());
+        fc.frame_lost(151);
+        assert!(fc.frame_needed());
+        assert_eq!(fc.next_limit(), 162);
+    }
+
+    #[test]
+    fn changing_max_active() {
+        let mut fc = ReceiverFlowControl::new((), 100);
+        fc.set_max_active(50);
+        // There is no MAX_STREAM_DATA frame needed.
+        assert!(!fc.frame_needed());
+        // We can still retire more than 50.
+        fc.retire(60);
+        // There is no MAX_STREAM_DATA fame needed yet.
+        assert!(!fc.frame_needed());
+        fc.retire(76);
+        assert!(fc.frame_needed());
+        assert_eq!(fc.next_limit(), 126);
+
+        // Increase max_active.
+        fc.set_max_active(60);
+        assert!(fc.frame_needed());
+        assert_eq!(fc.next_limit(), 136);
+
+        // We can retire more than 60.
+        fc.retire(136);
+        assert!(fc.frame_needed());
+        assert_eq!(fc.next_limit(), 196);
+    }
+
+    fn remote_stream_limits(role: Role, bidi: u64, unidi: u64) {
+        let mut fc = RemoteStreamLimits::new(2, 1, role);
+        assert!(fc[StreamType::BiDi]
+            .is_new_stream(StreamId::from(bidi))
+            .unwrap());
+        assert!(fc[StreamType::BiDi]
+            .is_new_stream(StreamId::from(bidi + 4))
+            .unwrap());
+        assert!(fc[StreamType::UniDi]
+            .is_new_stream(StreamId::from(unidi))
+            .unwrap());
+
+        // Exceed limits
+        assert_eq!(
+            fc[StreamType::BiDi].is_new_stream(StreamId::from(bidi + 8)),
+            Err(Error::StreamLimitError)
+        );
+        assert_eq!(
+            fc[StreamType::UniDi].is_new_stream(StreamId::from(unidi + 4)),
+            Err(Error::StreamLimitError)
+        );
+
+        assert_eq!(fc[StreamType::BiDi].take_stream_id(), StreamId::from(bidi));
+        assert_eq!(
+            fc[StreamType::BiDi].take_stream_id(),
+            StreamId::from(bidi + 4)
+        );
+        assert_eq!(
+            fc[StreamType::UniDi].take_stream_id(),
+            StreamId::from(unidi)
+        );
+
+        fc[StreamType::BiDi].add_retired(1);
+        fc[StreamType::BiDi].send_flowc_update();
+        // consume the frame
+        let mut builder = PacketBuilder::short(Encoder::new(), false, None::<&[u8]>);
+        let mut tokens = Vec::new();
+        fc[StreamType::BiDi].write_frames(&mut builder, &mut tokens, &mut FrameStats::default());
+        assert_eq!(tokens.len(), 1);
+
+        // Now 9 can be a new StreamId.
+        assert!(fc[StreamType::BiDi]
+            .is_new_stream(StreamId::from(bidi + 8))
+            .unwrap());
+        assert_eq!(
+            fc[StreamType::BiDi].take_stream_id(),
+            StreamId::from(bidi + 8)
+        );
+        // 13 still exceeds limits
+        assert_eq!(
+            fc[StreamType::BiDi].is_new_stream(StreamId::from(bidi + 12)),
+            Err(Error::StreamLimitError)
+        );
+
+        fc[StreamType::UniDi].add_retired(1);
+        fc[StreamType::UniDi].send_flowc_update();
+        // consume the frame
+        fc[StreamType::UniDi].write_frames(&mut builder, &mut tokens, &mut FrameStats::default());
+        assert_eq!(tokens.len(), 2);
+
+        // Now 7 can be a new StreamId.
+        assert!(fc[StreamType::UniDi]
+            .is_new_stream(StreamId::from(unidi + 4))
+            .unwrap());
+        assert_eq!(
+            fc[StreamType::UniDi].take_stream_id(),
+            StreamId::from(unidi + 4)
+        );
+        // 11 exceeds limits
+        assert_eq!(
+            fc[StreamType::UniDi].is_new_stream(StreamId::from(unidi + 8)),
+            Err(Error::StreamLimitError)
+        );
+    }
+
+    #[test]
+    fn remote_stream_limits_new_stream_client() {
+        remote_stream_limits(Role::Client, 1, 3);
+    }
+
+    #[test]
+    fn remote_stream_limits_new_stream_server() {
+        remote_stream_limits(Role::Server, 0, 2);
+    }
+
+    #[should_panic(expected = ".is_allowed")]
+    #[test]
+    fn remote_stream_limits_asserts_if_limit_exceeded() {
+        let mut fc = RemoteStreamLimits::new(2, 1, Role::Client);
+        assert_eq!(fc[StreamType::BiDi].take_stream_id(), StreamId::from(1));
+        assert_eq!(fc[StreamType::BiDi].take_stream_id(), StreamId::from(5));
+        _ = fc[StreamType::BiDi].take_stream_id();
+    }
+
+    fn local_stream_limits(role: Role, bidi: u64, unidi: u64) {
+        let mut fc = LocalStreamLimits::new(role);
+
+        fc[StreamType::BiDi].update(2);
+        fc[StreamType::UniDi].update(1);
+
+        // Add streams
+        assert_eq!(
+            fc.take_stream_id(StreamType::BiDi).unwrap(),
+            StreamId::from(bidi)
+        );
+        assert_eq!(
+            fc.take_stream_id(StreamType::BiDi).unwrap(),
+            StreamId::from(bidi + 4)
+        );
+        assert_eq!(fc.take_stream_id(StreamType::BiDi), None);
+        assert_eq!(
+            fc.take_stream_id(StreamType::UniDi).unwrap(),
+            StreamId::from(unidi)
+        );
+        assert_eq!(fc.take_stream_id(StreamType::UniDi), None);
+
+        // Increase limit
+        fc[StreamType::BiDi].update(3);
+        fc[StreamType::UniDi].update(2);
+        assert_eq!(
+            fc.take_stream_id(StreamType::BiDi).unwrap(),
+            StreamId::from(bidi + 8)
+        );
+        assert_eq!(fc.take_stream_id(StreamType::BiDi), None);
+        assert_eq!(
+            fc.take_stream_id(StreamType::UniDi).unwrap(),
+            StreamId::from(unidi + 4)
+        );
+        assert_eq!(fc.take_stream_id(StreamType::UniDi), None);
+    }
+
+    #[test]
+    fn local_stream_limits_new_stream_client() {
+        local_stream_limits(Role::Client, 0, 2);
+    }
+
+    #[test]
+    fn local_stream_limits_new_stream_server() {
+        local_stream_limits(Role::Server, 1, 3);
+    }
+}

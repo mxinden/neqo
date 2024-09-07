@@ -232,19 +232,20 @@ impl ServerRunner {
     }
 
     // TODO: Could as well call it UDP IO now, given that it does both in and output.
-    async fn process(&mut self, inx: Option<usize>) -> Result<(), io::Error> {
-        let mut dgram = if let Some(inx) = inx {
-            let (host, socket) = self.sockets.get_mut(inx).unwrap();
-            let dgram = socket.recv(host, &mut self.recv_buf)?;
-            if dgram.is_none() {
-                return Ok(());
-            }
-            dgram
-        } else {
-            None
-        };
-
+    async fn process(&mut self, mut inx: Option<usize>) -> Result<(), io::Error> {
         loop {
+            let mut dgram = if let Some(i) = inx {
+                let (host, socket) = self.sockets.get_mut(i).unwrap();
+                let dgram = socket.recv(host, &mut self.recv_buf)?;
+                if dgram.is_none() {
+                    // TODO: Better way to not try reading again?
+                    inx.take();
+                }
+                dgram
+            } else {
+                None
+            };
+
             match self
                 .server
                 .process_2(dgram.take(), (self.now)(), &mut self.send_buf)
@@ -265,17 +266,20 @@ impl ServerRunner {
                     };
                     socket.writable().await?;
                     socket.send(dgram)?;
+                    continue;
                 }
                 Output::Callback(new_timeout) => {
                     qdebug!("Setting timeout of {:?}", new_timeout);
                     self.timeout = Some(Box::pin(tokio::time::sleep(new_timeout)));
-                    break;
                 }
-                Output::None => {
-                    break;
-                }
+                Output::None => {}
+            }
+
+            if inx.is_none() {
+                break;
             }
         }
+
         Ok(())
     }
 
@@ -309,10 +313,10 @@ impl ServerRunner {
             }
 
             match self.ready().await? {
-                Ready::Socket(inx) => loop {
+                Ready::Socket(inx) => {
                     // TODO: Passing the index here to only borrow &mut self in process. Better way?
-                    self.process(Some(inx)).await?;
-                },
+                    self.process(Some(inx)).await?
+                }
                 Ready::Timeout => {
                     self.timeout = None;
                     self.process(None).await?;

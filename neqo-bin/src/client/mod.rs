@@ -426,9 +426,14 @@ impl<'a, H: Handler> Runner<'a, H> {
     }
 
     async fn process(&mut self) -> Result<(), io::Error> {
+        let mut should_read = true;
         loop {
-            // TODO: Should we recv even if the previous recv didn't yield anything?
-            let dgram = self.socket.recv(&self.local_addr, &mut self.recv_buf)?;
+            // TODO: Cleanup?
+            let dgram = should_read
+                .then(|| self.socket.recv(&self.local_addr, &mut self.recv_buf))
+                .transpose()?
+                .flatten();
+            should_read = dgram.is_some();
 
             match self
                 .client
@@ -437,16 +442,19 @@ impl<'a, H: Handler> Runner<'a, H> {
                 Output::Datagram(dgram) => {
                     self.socket.writable().await?;
                     self.socket.send(dgram)?;
+                    continue;
                 }
                 Output::Callback(new_timeout) => {
                     qdebug!("Setting timeout of {:?}", new_timeout);
                     self.timeout = Some(Box::pin(tokio::time::sleep(new_timeout)));
-                    break;
                 }
                 Output::None => {
                     qdebug!("Output::None");
-                    break;
                 }
+            }
+
+            if !should_read {
+                break;
             }
         }
 

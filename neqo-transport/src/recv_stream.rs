@@ -1482,9 +1482,15 @@ mod tests {
         // flow msg generated!
         assert!(s.has_frames_to_write());
 
+        let mut write_buffer = vec![];
         // consume it
         // TODO: 0 ideal here?
-        let mut builder = PacketBuilder::short(Encoder::new(), false, None::<&[u8]>, 0);
+        let mut builder = PacketBuilder::short(
+            Encoder::new_with_buffer(&mut write_buffer),
+            false,
+            None::<&[u8]>,
+            0,
+        );
         let mut token = Vec::new();
         s.write_frame(&mut builder, &mut token, &mut FrameStats::default());
 
@@ -1598,8 +1604,14 @@ mod tests {
         s.read(&mut buf).unwrap();
         assert!(session_fc.borrow().frame_needed());
         // consume it
+        let mut write_buffer = vec![];
         // TODO: 0 ideal here?
-        let mut builder = PacketBuilder::short(Encoder::new(), false, None::<&[u8]>, 0);
+        let mut builder = PacketBuilder::short(
+            Encoder::new_with_buffer(&mut write_buffer),
+            false,
+            None::<&[u8]>,
+            0,
+        );
         let mut token = Vec::new();
         session_fc
             .borrow_mut()
@@ -1619,9 +1631,15 @@ mod tests {
         assert!(!session_fc.borrow().frame_needed());
         s.read(&mut buf).unwrap();
         assert!(session_fc.borrow().frame_needed());
+        let mut write_buffer = vec![];
         // consume it
         // TODO: 0 ideal here?
-        let mut builder = PacketBuilder::short(Encoder::new(), false, None::<&[u8]>, 0);
+        let mut builder = PacketBuilder::short(
+            Encoder::new_with_buffer(&mut write_buffer),
+            false,
+            None::<&[u8]>,
+            0,
+        );
         let mut token = Vec::new();
         session_fc
             .borrow_mut()
@@ -1868,9 +1886,15 @@ mod tests {
         assert!(!fc.borrow().frame_needed());
         assert!(s.fc().unwrap().frame_needed());
 
+        let mut write_buffer = vec![];
         // Write the fc update frame
         // TODO: 0 ideal here?
-        let mut builder = PacketBuilder::short(Encoder::new(), false, None::<&[u8]>, 0);
+        let mut builder = PacketBuilder::short(
+            Encoder::new_with_buffer(&mut write_buffer),
+            false,
+            None::<&[u8]>,
+            0,
+        );
         let mut token = Vec::new();
         let mut stats = FrameStats::default();
         fc.borrow_mut()

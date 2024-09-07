@@ -481,6 +481,7 @@ impl<'a> From<Encoder<&'a mut Vec<u8>>> for &'a [u8] {
     }
 }
 
+// TODO: Should this be test only?
 impl From<Encoder> for Vec<u8> {
     #[must_use]
     fn from(buf: Encoder) -> Vec<u8> {

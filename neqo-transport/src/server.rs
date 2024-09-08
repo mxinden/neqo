@@ -485,7 +485,7 @@ impl Server {
         write_buffer: &'a mut Vec<u8>,
     ) -> Output<&'a [u8]> {
         // TODO: This the right place?
-        write_buffer.clear();
+        assert!(write_buffer.is_empty());
         let out = dgram
             .map_or(Output::None, |d| {
                 // TODO: NLL borrow issue. See https://github.com/rust-lang/rust/issues/54663

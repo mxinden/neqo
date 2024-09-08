@@ -442,6 +442,8 @@ impl<'a, H: Handler> Runner<'a, H> {
                 Output::Datagram(dgram) => {
                     self.socket.writable().await?;
                     self.socket.send(dgram)?;
+                    // TODO: Or should we do this right after using it?
+                    self.send_buf.clear();
                     continue;
                 }
                 Output::Callback(new_timeout) => {

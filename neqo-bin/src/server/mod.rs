@@ -266,6 +266,8 @@ impl ServerRunner {
                     };
                     socket.writable().await?;
                     socket.send(dgram)?;
+                    // TODO: Or should we do this right after using it?
+                    self.send_buf.clear();
                     continue;
                 }
                 Output::Callback(new_timeout) => {

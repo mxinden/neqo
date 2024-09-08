@@ -1183,10 +1183,11 @@ impl Connection {
         // TODO: Could this as well be an &mut [u8]?
         write_buffer: &'a mut Vec<u8>,
     ) -> Output<&'a [u8]> {
-        // TODO: Where is the best place? Maybe neqo-bin and then just assert
-        // that it is empty here? Maybe we should really be taking an &mut [u8]
-        // instead of a &mut Vec<u8>.
-        write_buffer.clear();
+        // TODO: Where is the best place?
+        //
+        // TODO: Maybe we should really be taking an &mut [u8] instead of a &mut
+        // Vec<u8>.
+        assert!(write_buffer.is_empty());
         if let Some(d) = input {
             self.input(d, now, now);
             self.process_saved(now);

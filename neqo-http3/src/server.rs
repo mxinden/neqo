@@ -127,7 +127,7 @@ impl Http3Server {
             // Find alternative.
             .process_2(dgram, now, unsafe { &mut *(write_buffer as *mut _) });
         self.process_http3(now);
-        // If we do not that a dgram already try again after process_http3.
+        // If we do not have a dgram already try again after process_http3.
         match out {
             Output::Datagram(d) => {
                 qtrace!([self], "Send packet: {:?}", d);

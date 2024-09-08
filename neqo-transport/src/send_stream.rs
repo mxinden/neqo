@@ -3098,14 +3098,15 @@ mod tests {
             );
             assert_eq!(stats.stream, 1);
             assert_eq!(builder.is_full(), expect_full);
-            // TODO: can we do this cleaner?
-            let encoder: Encoder<&mut Vec<u8>> = Encoder::from(builder);
+            let encoder = Encoder::from(builder);
             let buf: &mut Vec<u8> = encoder.into();
             buf.clone().split_off(header_len)
         }
 
+        // TODO: separate write buffer needed?
+        let mut write_buffer = vec![];
         // The minimum amount of extra space for getting another frame in.
-        let mut enc = Encoder::new();
+        let mut enc = Encoder::new_with_buffer(&mut write_buffer);
         enc.encode_varint(u64::try_from(data.len()).unwrap());
         let len_buf = Vec::from(enc);
         let minimum_extra = len_buf.len() + PacketBuilder::MINIMUM_FRAME_SIZE;

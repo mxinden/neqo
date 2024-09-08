@@ -116,6 +116,7 @@ pub fn recv_inner(
     Ok(dgrams)
 }
 
+// TODO: replace recv_inner in favor of this one.
 pub fn recv_inner_2<'a>(
     local_address: &SocketAddr,
     state: &UdpSocketState,

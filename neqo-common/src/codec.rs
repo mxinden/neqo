@@ -193,7 +193,7 @@ impl<'a, 'b> PartialEq<Decoder<'b>> for Decoder<'a> {
     }
 }
 
-// TODO: Default Vec<u8> still needed? Or is this actually always &mut Vec<u8> or even &mut [u8]?
+// TODO: Should this be `&mut [u8]`? Does it need to be able to allocate?
 /// Encoder is good for building data structures.
 #[derive(PartialEq, Eq)]
 pub struct Encoder<'a> {
@@ -207,36 +207,6 @@ impl<'a> Encoder<'a> {
 }
 
 impl<'a> Encoder<'a> {
-    /// Don't use this except in testing.
-    ///
-    /// # Panics
-    ///
-    /// When `s` contains non-hex values or an odd number of values.
-    #[must_use]
-    pub fn from_hex(mut self, s: impl AsRef<str>) -> Self {
-        let s = s.as_ref();
-        assert_eq!(s.len() % 2, 0, "Needs to be even length");
-
-        let cap = s.len() / 2;
-        self.buf.reserve(cap);
-
-        for i in 0..cap {
-            let v = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap();
-            self.encode_byte(v);
-        }
-        self
-    }
-
-    /// Static helper to determine how long a varint-prefixed array encodes to.
-    ///
-    /// # Panics
-    ///
-    /// When `len` doesn't fit in a `u64`.
-    #[must_use]
-    pub fn vvec_len(len: usize) -> usize {
-        Self::varint_len(u64::try_from(len).unwrap()) + len
-    }
-
     /// Static helper function for previewing the results of encoding without doing it.
     ///
     /// # Panics
@@ -252,9 +222,17 @@ impl<'a> Encoder<'a> {
             () => panic!("Varint value too large"),
         }
     }
-}
 
-impl<'a> Encoder<'a> {
+    /// Static helper to determine how long a varint-prefixed array encodes to.
+    ///
+    /// # Panics
+    ///
+    /// When `len` doesn't fit in a `u64`.
+    #[must_use]
+    pub fn vvec_len(len: usize) -> usize {
+        Self::varint_len(u64::try_from(len).unwrap()) + len
+    }
+
     /// Get the length of the underlying buffer: the number of bytes that have
     /// been written to the buffer.
     #[must_use]
@@ -273,6 +251,26 @@ impl<'a> Encoder<'a> {
     #[must_use]
     pub fn as_decoder(&self) -> Decoder {
         Decoder::new(self.buf)
+    }
+
+    /// Don't use this except in testing.
+    ///
+    /// # Panics
+    ///
+    /// When `s` contains non-hex values or an odd number of values.
+    #[must_use]
+    pub fn from_hex(mut self, s: impl AsRef<str>) -> Self {
+        let s = s.as_ref();
+        assert_eq!(s.len() % 2, 0, "Needs to be even length");
+
+        let cap = s.len() / 2;
+        self.buf.reserve(cap);
+
+        for i in 0..cap {
+            let v = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap();
+            self.encode_byte(v);
+        }
+        self
     }
 
     /// Generic encode routine for arbitrary data.

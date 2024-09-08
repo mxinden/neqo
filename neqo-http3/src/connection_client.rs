@@ -888,6 +888,7 @@ impl Http3Client {
             .map_datagram(Into::into)
     }
 
+    // TODO: Remove in favor of `process_into`?
     /// The function should be called when there is a new UDP packet available. The function will
     /// handle the packet payload.
     ///
@@ -902,6 +903,7 @@ impl Http3Client {
         self.process_multiple_input(iter::once(dgram), now);
     }
 
+    // TODO: Remove in favor of `process_into`?
     pub fn process_multiple_input<'a, I>(&mut self, dgrams: I, now: Instant)
     where
         I: IntoIterator<Item = &'a Datagram>,

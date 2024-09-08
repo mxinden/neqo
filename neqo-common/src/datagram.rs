@@ -33,6 +33,7 @@ impl Datagram {
 }
 
 impl<'a> Datagram<&'a [u8]> {
+    // TODO: Rename
     pub fn new_2(src: SocketAddr, dst: SocketAddr, tos: IpTos, d: &'a [u8]) -> Self {
         Self {
             src,
@@ -43,6 +44,7 @@ impl<'a> Datagram<&'a [u8]> {
         }
     }
 
+    // TODO: Rename
     pub fn new_2_with_segment_size(
         src: SocketAddr,
         dst: SocketAddr,

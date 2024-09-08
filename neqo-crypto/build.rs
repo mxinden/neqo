@@ -333,7 +333,11 @@ fn setup_standalone(nss: &str) -> Vec<String> {
         "cargo:rustc-link-search=native={}",
         nsslibdir.to_str().unwrap()
     );
-    static_link();
+    if is_debug() || env::consts::OS == "windows" {
+        static_link();
+    } else {
+        dynamic_link();
+    }
 
     let mut flags: Vec<String> = Vec::new();
     for i in includes {

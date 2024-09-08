@@ -77,14 +77,10 @@ pub fn connect(client: &mut Connection, server: &mut Server) -> ConnectionRef {
     let out = server.process(out.as_dgram_ref(), now());
     assert!(out.as_dgram_ref().is_some()); // ACK + HANDSHAKE_DONE + NST
 
-    println!("===== 4");
-
     // Have the client process the HANDSHAKE_DONE.
     let out = client.process(out.as_dgram_ref(), now());
     assert!(out.as_dgram_ref().is_none());
     assert_eq!(*client.state(), State::Confirmed);
-
-    println!("===== 5");
 
     connected_server(server)
 }

@@ -1048,7 +1048,9 @@ mod tests {
 
     #[test]
     fn disallow_long_dcid() {
-        let mut enc = Encoder::new();
+        // TODO: separate write buffer needed?
+        let mut write_buffer = vec![];
+        let mut enc = Encoder::new_with_buffer(&mut write_buffer);
         enc.encode_byte(PACKET_BIT_LONG | PACKET_BIT_FIXED_QUIC);
         enc.encode_uint(4, Version::default().wire_version());
         enc.encode_vec(1, &[0x00; MAX_CONNECTION_ID_LEN + 1]);
@@ -1060,7 +1062,9 @@ mod tests {
 
     #[test]
     fn disallow_long_scid() {
-        let mut enc = Encoder::new();
+        // TODO: separate write buffer needed?
+        let mut write_buffer = vec![];
+        let mut enc = Encoder::new_with_buffer(&mut write_buffer);
         enc.encode_byte(PACKET_BIT_LONG | PACKET_BIT_FIXED_QUIC);
         enc.encode_uint(4, Version::default().wire_version());
         enc.encode_vec(1, &[]);
@@ -1544,7 +1548,9 @@ mod tests {
         const BIG_DCID: &[u8] = &[0x44; MAX_CONNECTION_ID_LEN + 1];
         const BIG_SCID: &[u8] = &[0xee; 255];
 
-        let mut enc = Encoder::from(&[0xff, 0x00, 0x00, 0x00, 0x00][..]);
+        // TODO: separate write buffer needed?
+        let mut write_buffer = vec![0xff, 0x00, 0x00, 0x00, 0x00];
+        let mut enc = Encoder::new_with_buffer(&mut write_buffer);
         enc.encode_vec(1, BIG_DCID);
         enc.encode_vec(1, BIG_SCID);
         enc.encode_uint(4, 0x1a2a_3a4a_u64);

@@ -113,7 +113,7 @@ impl Http3Server {
         self.server.ech_config()
     }
 
-    pub fn process_2<'a>(
+    pub fn process_into<'a>(
         &mut self,
         dgram: Option<Datagram<&[u8]>>,
         now: Instant,
@@ -137,18 +137,11 @@ impl Http3Server {
         }
     }
 
+    // TODO: Remove in favor of `process_into`?
     pub fn process(&mut self, dgram: Option<&Datagram>, now: Instant) -> Output {
-        qtrace!([self], "Process.");
-        let out = self.server.process(dgram, now);
-        self.process_http3(now);
-        // If we do not that a dgram already try again after process_http3.
-        match out {
-            Output::Datagram(d) => {
-                qtrace!([self], "Send packet: {:?}", d);
-                Output::Datagram(d)
-            }
-            _ => self.server.process(Option::<&Datagram>::None, now),
-        }
+        let mut write_buffer = vec![];
+        self.process_into(dgram.map(Into::into), now, &mut write_buffer)
+            .map_datagram(Into::into)
     }
 
     /// Process HTTP3 layer.

@@ -857,13 +857,13 @@ impl Http3Client {
             .stats(&mut self.conn)
     }
 
-    /// This function combines  `process_input` and `process_output` function.
-    pub fn process_2<'a>(
+    pub fn process_into<'a>(
         &mut self,
         input: Option<Datagram<&[u8]>>,
         now: Instant,
         write_buffer: &'a mut Vec<u8>,
     ) -> Output<&'a [u8]> {
+        qtrace!([self], "Process.");
         // TODO: NLL borrow issue. See https://github.com/rust-lang/rust/issues/54663
         //
         // Find alternative.
@@ -871,7 +871,7 @@ impl Http3Client {
             .conn
             .process_into(input, now, unsafe { &mut *(write_buffer as *mut _) });
         self.process_http3(now);
-        if !matches!(out, Output::None) {
+        if matches!(out, Output::Datagram(_)) {
             return out;
         }
 
@@ -882,13 +882,10 @@ impl Http3Client {
         out
     }
 
-    /// This function combines  `process_input` and `process_output` function.
     pub fn process(&mut self, dgram: Option<&Datagram>, now: Instant) -> Output {
-        qtrace!([self], "Process.");
-        if let Some(d) = dgram {
-            self.process_input(d, now);
-        }
-        self.process_output(now)
+        let mut write_buffer = vec![];
+        self.process_into(dgram.map(Into::into), now, &mut write_buffer)
+            .map_datagram(Into::into)
     }
 
     /// The function should be called when there is a new UDP packet available. The function will

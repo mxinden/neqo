@@ -185,7 +185,7 @@ impl HttpServer {
 }
 
 impl super::HttpServer for HttpServer {
-    fn process_2<'a>(
+    fn process_into<'a>(
         &mut self,
         dgram: Option<Datagram<&[u8]>>,
         now: Instant,

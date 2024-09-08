@@ -99,6 +99,7 @@ pub enum ZeroRttState {
 #[derive(Clone, PartialEq, Eq)]
 /// Type returned from `process()` and `process_output()`. Users are required to
 /// call these repeatedly until `Callback` or `None` is returned.
+// TODO: Make `&[u8]` the default.
 pub enum Output<D = Vec<u8>> {
     /// Connection requires no action.
     None,
@@ -1153,6 +1154,7 @@ impl Connection {
         }
     }
 
+    // TODO: Either replace with, or at least use `process_into`.
     /// Process input and generate output.
     #[must_use = "Output of the process function must be handled"]
     pub fn process(&mut self, dgram: Option<&Datagram>, now: Instant) -> Output {

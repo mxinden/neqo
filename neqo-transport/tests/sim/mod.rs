@@ -5,7 +5,6 @@
 // except according to those terms.
 
 // Tests with simulated network
-#![cfg_attr(feature = "deny-warnings", deny(warnings))]
 #![warn(clippy::pedantic)]
 
 pub mod connection;

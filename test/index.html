@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Download Time Measurement</title>
+</head>
+<body>
+    <h2>Download Time Measurement</h2>
+
+    <!-- Input field for size -->
+    <label for="sizeValue">Enter the size to download:</label>
+    <input type="number" id="sizeValue" value="1" min="1">
+
+    <!-- Dropdown for units -->
+    <select id="sizeUnit">
+        <option value="Byte">Byte</option>
+        <option value="KiB">KiB</option>
+        <option value="MiB">MiB</option>
+        <option value="GiB" selected>GiB</option>
+    </select>
+
+    <button id="downloadBtn">Download Resource</button>
+
+    <br><br>
+
+    <progress id="progressBar" value="0" max="100"></progress>
+
+    <p id="result">Download not started</p>
+
+    <script>
+        document.getElementById('downloadBtn').addEventListener('click', async () => {
+            const sizeValueInput = document.getElementById('sizeValue');
+            const sizeUnitSelect = document.getElementById('sizeUnit');
+            const progressBar = document.getElementById('progressBar');
+            const result = document.getElementById('result');
+
+            const sizeValue = parseFloat(sizeValueInput.value);
+            const sizeUnit = sizeUnitSelect.value;
+
+            if (isNaN(sizeValue) || sizeValue <= 0) {
+                result.textContent = 'Please enter a valid number greater than zero.';
+                return;
+            }
+
+            // Convert size to bytes based on selected unit
+            let byteSize;
+            switch (sizeUnit) {
+                case 'Byte':
+                    byteSize = sizeValue;
+                    break;
+                case 'KiB':
+                    byteSize = sizeValue * 1024;
+                    break;
+                case 'MiB':
+                    byteSize = sizeValue * 1024 * 1024;
+                    break;
+                case 'GiB':
+                    byteSize = sizeValue * 1024 * 1024 * 1024;
+                    break;
+                default:
+                    result.textContent = 'Invalid size unit selected.';
+                    return;
+            }
+
+            const url = `https://localhost:12345/${byteSize}`;
+
+            result.textContent = 'Starting download...';
+            progressBar.value = 0;
+
+            try {
+                const startTime = performance.now();
+
+                const response = await fetch(url);
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+
+                const contentLengthHeader = response.headers.get('content-length');
+                const contentLength = contentLengthHeader ? parseInt(contentLengthHeader) : byteSize;
+
+                const reader = response.body.getReader();
+                let downloadedBytes = 0;
+
+                // Declare elapsedTime and throughput outside the loop
+                let elapsedTime = 0;
+                let throughput = 0;
+
+                // Set up UI update interval
+                const updateInterval = 100; // Update UI every 100ms
+                let lastUpdateTime = performance.now();
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    downloadedBytes += value.length;
+
+                    const currentTime = performance.now();
+
+                    if (currentTime - lastUpdateTime < updateInterval) {
+                        continue; // Skip UI update if interval not reached
+                    }
+
+                    elapsedTime = (currentTime - startTime) / 1000;
+                    throughput = (downloadedBytes * 8) / (elapsedTime * 1_000_000); // Mbit/s
+
+                    const progress = (downloadedBytes / contentLength) * 100;
+                    progressBar.value = progress;
+
+                    result.textContent = `Downloaded ${(downloadedBytes / (1024 * 1024)).toFixed(2)} MiB in ${elapsedTime.toFixed(2)} seconds. Throughput: ${throughput.toFixed(2)} Mbit/s`;
+
+                    lastUpdateTime = currentTime;
+                }
+
+                // Ensure final elapsedTime and throughput are accurate
+                const endTime = performance.now();
+                elapsedTime = (endTime - startTime) / 1000;
+                throughput = (downloadedBytes * 8) / (elapsedTime * 1_000_000); // Mbit/s
+
+                progressBar.value = 100;
+                result.textContent = `Download completed: ${sizeValue} ${sizeUnit} in ${elapsedTime.toFixed(2)} seconds. Throughput: ${throughput.toFixed(2)} Mbit/s`;
+            } catch (error) {
+                result.textContent = `An error occurred: ${error.message}`;
+            }
+        });
+    </script>
+</body>
+</html>

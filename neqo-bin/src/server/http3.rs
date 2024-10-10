@@ -108,11 +108,31 @@ impl super::HttpServer for HttpServer {
                         continue;
                     };
 
-                    let mut response = if self.is_qns_test {
+                    let (mut response, content_type) = if self.is_qns_test {
                         match qns_read_response(path.value()) {
-                            Ok(data) => ResponseData::from(data),
+                            Ok(data) => (ResponseData::from(data), None),
                             Err(e) => {
                                 qerror!("Failed to read {}: {e}", path.value());
+                                stream
+                                    .send_headers(&[Header::new(":status", "404")])
+                                    .unwrap();
+                                stream.stream_close_send().unwrap();
+                                continue;
+                            }
+                        }
+                    } else if path.value() == "/download.html" {
+                        // New logic to serve "download.html"
+                        match std::fs::read_to_string("test/index.html") {
+                            Ok(file_contents) => {
+                                // Create a ResponseData from the file contents
+                                (
+                                    ResponseData::from(file_contents.as_str()),
+                                    Some("text/html"),
+                                )
+                            }
+                            Err(e) => {
+                                // Handle file read errors
+                                qerror!("Failed to read download.html: {e}");
                                 stream
                                     .send_headers(&[Header::new(":status", "404")])
                                     .unwrap();
@@ -123,17 +143,25 @@ impl super::HttpServer for HttpServer {
                     } else if let Ok(count) =
                         path.value().trim_matches(|p| p == '/').parse::<usize>()
                     {
-                        ResponseData::zeroes(count)
+                        (ResponseData::zeroes(count), None)
                     } else {
-                        ResponseData::from(path.value())
+                        (ResponseData::from(path.value()), None)
                     };
 
-                    stream
-                        .send_headers(&[
-                            Header::new(":status", "200"),
-                            Header::new("content-length", response.remaining.to_string()),
-                        ])
-                        .unwrap();
+                    // Prepare the response headers
+                    let mut headers = vec![
+                        Header::new(":status", "200"),
+                        Header::new("content-length", response.remaining.to_string()),
+                    ];
+
+                    // Include "Content-Type" header if applicable
+                    if let Some(ct) = content_type {
+                        headers.push(Header::new("content-type", ct));
+                    }
+
+                    // Send the response headers
+                    stream.send_headers(&headers).unwrap();
+
                     response.send_h3(&stream);
                     if response.done() {
                         stream.stream_close_send().unwrap();

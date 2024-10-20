@@ -37,6 +37,13 @@ impl<D> Datagram<D> {
     }
 }
 
+impl<D: AsRef<[u8]>> Datagram<D> {
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.d.as_ref().len()
+    }
+}
+
 impl Datagram<Vec<u8>> {
     pub fn new<V: Into<Vec<u8>>>(src: SocketAddr, dst: SocketAddr, tos: IpTos, d: V) -> Self {
         Self {

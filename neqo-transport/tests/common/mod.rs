@@ -106,7 +106,7 @@ pub fn generate_ticket(server: &mut Server) -> ResumptionToken {
 
     server_conn.borrow_mut().send_ticket(now(), &[]).unwrap();
     let out = server.process(None, now());
-    client.process_input(out.as_dgram_ref().unwrap(), now()); // Consume ticket, ignore output.
+    client.process_input(out.dgram().unwrap(), now()); // Consume ticket, ignore output.
     let ticket = find_ticket(&mut client);
 
     // Have the client close the connection and then let the server clean up.

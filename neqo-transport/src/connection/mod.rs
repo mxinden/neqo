@@ -1022,22 +1022,23 @@ impl Connection {
     }
 
     /// Process new input datagrams on the connection.
-    pub fn process_input<'a>(&mut self, d: impl Into<Datagram<&'a [u8]>>, now: Instant) {
+    pub fn process_input<'a>(&mut self, d: Datagram<impl AsRef<[u8]>>, now: Instant) {
         self.process_multiple_input(iter::once(d.into()), now);
     }
 
     /// Process new input datagrams on the connection.
-    pub fn process_multiple_input<'a, I>(&mut self, dgrams: I, now: Instant)
-    where
-        I: IntoIterator<Item = Datagram<&'a [u8]>>,
-    {
+    pub fn process_multiple_input<'a>(
+        &mut self,
+        dgrams: impl IntoIterator<Item = Datagram<impl AsRef<[u8]>>>,
+        now: Instant,
+    ) {
         let mut dgrams = dgrams.into_iter().peekable();
         if dgrams.peek().is_none() {
             return;
         }
 
         for d in dgrams {
-            self.input(d, now, now);
+            self.input(&d, now, now);
         }
         self.process_saved(now);
         self.streams.cleanup_closed_streams();
@@ -1241,27 +1242,31 @@ impl Connection {
         }
     }
 
-    fn is_stateless_reset(&self, path: &PathRef, d: &Datagram<&[u8]>) -> bool {
+    fn is_stateless_reset(&self, path: &PathRef, d: &Datagram<impl AsRef<[u8]>>) -> bool {
         // If the datagram is too small, don't try.
         // If the connection is connected, then the reset token will be invalid.
         if d.len() < 16 || !self.state.connected() {
             return false;
         }
-        <&[u8; 16]>::try_from(&d[d.len() - 16..])
+        <&[u8; 16]>::try_from(&d.as_ref()[d.len() - 16..])
             .map_or(false, |token| path.borrow().is_stateless_reset(token))
     }
 
     fn check_stateless_reset(
         &mut self,
         path: &PathRef,
-        d: &Datagram<&[u8]>,
+        d: &Datagram<impl AsRef<[u8]>>,
         first: bool,
         now: Instant,
     ) -> Res<()> {
         if first && self.is_stateless_reset(path, d) {
             // Failing to process a packet in a datagram might
             // indicate that there is a stateless reset present.
-            qdebug!([self], "Stateless reset: {}", hex(&d[d.len() - 16..]));
+            qdebug!(
+                [self],
+                "Stateless reset: {}",
+                hex(&d.as_ref()[d.len() - 16..])
+            );
             self.state_signaling.reset();
             self.set_state(State::Draining {
                 error: CloseReason::Transport(Error::StatelessReset),
@@ -1280,7 +1285,7 @@ impl Connection {
             debug_assert!(self.crypto.states.rx_hp(self.version, cspace).is_some());
             for saved in self.saved_datagrams.take_saved() {
                 qtrace!([self], "input saved @{:?}: {:?}", saved.t, saved.d);
-                self.input(saved.d.borrow(), saved.t, now);
+                self.input(&saved.d, saved.t, now);
             }
         }
     }
@@ -1290,7 +1295,7 @@ impl Connection {
     fn save_datagram(
         &mut self,
         cspace: CryptoSpace,
-        d: &Datagram<&[u8]>,
+        d: &Datagram<impl AsRef<[u8]>>,
         remaining: usize,
         now: Instant,
     ) {
@@ -1299,10 +1304,10 @@ impl Connection {
                 d.source(),
                 d.destination(),
                 d.tos(),
-                d[d.len() - remaining..].to_vec(),
+                d.as_ref()[d.len() - remaining..].to_vec(),
             )
         } else {
-            d.to_owned()
+            todo!()
         };
         self.saved_datagrams.save(cspace, d, now);
         self.stats.borrow_mut().saved_datagrams += 1;
@@ -1504,7 +1509,7 @@ impl Connection {
     fn postprocess_packet(
         &mut self,
         path: &PathRef,
-        d: &Datagram<&[u8]>,
+        d: &Datagram<impl AsRef<[u8]>>,
         packet: &PublicPacket,
         migrate: bool,
         now: Instant,
@@ -1536,9 +1541,7 @@ impl Connection {
 
     /// Take a datagram as input.  This reports an error if the packet was bad.
     /// This takes two times: when the datagram was received, and the current time.
-    fn input<'a>(&mut self, d: impl Into<Datagram<&'a [u8]>>, received: Instant, now: Instant) {
-        let d = d.into();
-
+    fn input<'a>(&mut self, d: &Datagram<impl AsRef<[u8]>>, received: Instant, now: Instant) {
         // First determine the path.
         let path = self.paths.find_path_with_rebinding(
             d.destination(),
@@ -1547,13 +1550,18 @@ impl Connection {
             self.conn_params.pacing_enabled(),
             now,
         );
-        path.borrow_mut().add_received(d.len());
+        path.borrow_mut().add_received(d.as_ref().len());
         let res = self.input_path(&path, &d, received);
         self.capture_error(Some(path), now, 0, res).ok();
     }
 
-    fn input_path(&mut self, path: &PathRef, d: &Datagram<&[u8]>, now: Instant) -> Res<()> {
-        let mut slc = &d[..];
+    fn input_path(
+        &mut self,
+        path: &PathRef,
+        d: &Datagram<impl AsRef<[u8]>>,
+        now: Instant,
+    ) -> Res<()> {
+        let mut slc = &d.as_ref()[..];
         let mut dcid = None;
 
         qtrace!([self], "{} input {}", path.borrow(), hex(d));
@@ -1969,7 +1977,7 @@ impl Connection {
     fn handle_migration(
         &mut self,
         path: &PathRef,
-        d: &Datagram<&[u8]>,
+        d: &Datagram<impl AsRef<[u8]>>,
         migrate: bool,
         now: Instant,
     ) {

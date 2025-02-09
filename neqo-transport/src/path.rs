@@ -522,16 +522,8 @@ impl Path {
         now: Instant,
         stats: &mut Stats,
     ) -> Self {
-        let iface_mtu = match mtu::interface_and_mtu(remote.ip()) {
-            Ok((name, mtu)) => {
-                qdebug!("Outbound interface {name} has MTU {mtu}");
-                stats.pmtud_iface_mtu = mtu;
-                Some(mtu)
-            }
-            Err(e) => {
-                qwarn!("Failed to determine outbound interface: {e}");
-                None
-            }
+        let iface_mtu = {
+            None
         };
         let mut sender = PacketSender::new(cc, pacing, Pmtud::new(remote.ip(), iface_mtu), now);
         sender.set_qlog(qlog.clone());

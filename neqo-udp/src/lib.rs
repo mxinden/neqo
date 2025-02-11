@@ -199,7 +199,12 @@ impl<S: SocketRef> Socket<S> {
 
     /// Send a [`Datagram`] on the given [`Socket`].
     pub fn send(&self, d: &Datagram) -> io::Result<()> {
-        send_inner(&self.state, (&self.inner).into(), d)
+        let r = send_inner(&self.state, (&self.inner).into(), d);
+        if let Err(e) = &r {
+            println!("send error: {e:?}");
+            eprintln!("send error: {e:?}");
+        }
+        r
     }
 
     /// Receive a batch of [`Datagram`]s on the given [`Socket`], each
@@ -209,7 +214,12 @@ impl<S: SocketRef> Socket<S> {
         local_address: SocketAddr,
         recv_buf: &'a mut RecvBuf,
     ) -> Result<DatagramIter<'a>, io::Error> {
-        recv_inner(local_address, &self.state, &self.inner, recv_buf)
+        let r = recv_inner(local_address, &self.state, &self.inner, recv_buf);
+        if let Err(e) = &r {
+            println!("recv error: {e:?}");
+            eprintln!("recv error: {e:?}");
+        }
+        r
     }
 }
 

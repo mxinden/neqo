@@ -92,7 +92,9 @@ fn zero_rtt_send_recv() {
 
     now += Duration::from_millis(20);
 
+    println!("==== process 1");
     client.process(server_hs.dgram(), now);
+    println!("==== process 2");
     client.process(server_hs2.dgram(), now);
 
     // Now send a 0-RTT packet.

@@ -273,7 +273,6 @@ impl RecvdPackets {
 
     /// Returns true if an ACK frame should be sent now.
     fn ack_now(&self, now: Instant, rtt: Duration) -> bool {
-        return true;
         // If ack_time is Some, then we have something to acknowledge.
         // In that case, either ack because `now >= ack_time`, or
         // because it is more than an RTT since the last time we sent an ack.
@@ -352,9 +351,9 @@ impl RecvdPackets {
 
             let immediate_ack = self.space != PacketNumberSpace::ApplicationData
                 || (pn != next_in_order_pn && !self.ignore_order)
-                || self.unacknowledged_count > self.unacknowledged_tolerance;
+                || self.unacknowledged_count > self.unacknowledged_tolerance || pn == 0;
 
-            let ack_time = if immediate_ack {
+            let ack_time = if dbg!(immediate_ack) {
                 now
             } else {
                 // Note that `ack_delay` can change and that won't take effect if

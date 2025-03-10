@@ -2405,6 +2405,7 @@ impl Connection {
         // packets can go in a single datagram
         let mut encoder = Encoder::with_capacity(profile.limit());
         for space in PacketNumberSpace::iter() {
+            println!("{space:?}");
             // Ensure we have tx crypto state for this epoch, or skip it.
             let Some((epoch, tx)) = self.crypto.states.select_tx_mut(self.version, space) else {
                 continue;

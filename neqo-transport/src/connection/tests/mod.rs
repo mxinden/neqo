@@ -150,10 +150,10 @@ pub fn new_server(params: ConnectionParameters) -> Connection {
     c
 }
 pub fn default_server() -> Connection {
-    new_server(ConnectionParameters::default())
+    new_server(ConnectionParameters::default().pacing(false))
 }
 pub fn resumed_server(client: &Connection) -> Connection {
-    new_server(ConnectionParameters::default().versions(client.version(), Version::all()))
+    new_server(ConnectionParameters::default().versions(client.version(), Version::all()).pacing(false))
 }
 
 /// If state is `AuthenticationNeeded` call `authenticated()`. This function will

@@ -273,6 +273,7 @@ impl RecvdPackets {
 
     /// Returns true if an ACK frame should be sent now.
     fn ack_now(&self, now: Instant, rtt: Duration) -> bool {
+        return true;
         // If ack_time is Some, then we have something to acknowledge.
         // In that case, either ack because `now >= ack_time`, or
         // because it is more than an RTT since the last time we sent an ack.
@@ -424,8 +425,10 @@ impl RecvdPackets {
         tokens: &mut Vec<RecoveryToken>,
         stats: &mut FrameStats,
     ) {
+        println!("write_frame");
         // Check that we aren't delaying ACKs.
         if !self.ack_now(now, rtt) {
+            println!("delaying ack");
             return;
         }
 

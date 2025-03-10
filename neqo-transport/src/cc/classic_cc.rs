@@ -303,7 +303,7 @@ impl<T: WindowAdjustment> CongestionControl for ClassicCongestionControl<T> {
         );
 
         let is_pmtud_probe = self.pmtud.is_probe_filter();
-        let mut lost_packets = lost_packets
+        let mut lost_packets = dbg!(lost_packets)
             .iter()
             .filter(|pkt| !is_pmtud_probe(pkt))
             .rev()

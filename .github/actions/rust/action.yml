@@ -80,13 +80,21 @@ runs:
         if [ "$RUNNER_ENVIRONMENT" == "github-hosted" ]; then
           echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
         fi
+        - name: Get MSRV
+
+      id: msrv
+      shell: bash
+      run: |
+        msrv="$(grep rust-version Cargo.toml | tr -d '"' | cut -f3 -d\ )"
+        echo "msrv=$msrv" >> "$GITHUB_OUTPUT"
 
     - name: Enable Rust cache
       uses: Swatinem/rust-cache@f0deed1e0edfc6a9be95417288c0e1099b1eeec3 # v2.7.7
       with:
         cache-bin: ${{ runner.environment != 'github-hosted' }}
         cache-all-crates: true
-        key: ${{ inputs.targets }}
+        key: |
+          ${{ inputs.targets }}-${{ steps.msrv.outputs.msrv }}
         workspaces: ${{ inputs.workspaces }}
         save-if: ${{ github.ref == 'refs/heads/main' }} # Only cache runs from `main`.
 

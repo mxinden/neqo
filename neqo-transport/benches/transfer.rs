@@ -57,10 +57,10 @@ fn benchmark_transfer(c: &mut Criterion, label: &str, seed: Option<impl AsRef<st
             sim.setup()
         };
 
-        let mut group = c.benchmark_group(format!("transfer/pacing-{pacing}/{label}"));
-        group.noise_threshold(0.03);
+        c.noise_threshold(0.03);
 
         // Benchmark with wallclock time, i.e. measure the compute efficiency.
+        let mut group = c.benchmark_group(format!("transfer/pacing-{pacing}/{label}"));
         group.bench_function("wallclock-time", |b| {
             b.iter_batched(
                 setup,
@@ -76,6 +76,7 @@ fn benchmark_transfer(c: &mut Criterion, label: &str, seed: Option<impl AsRef<st
         //
         // Note: Given that this is using simulated time, we can measure actual
         // throughput.
+        let mut group = c.benchmark_group(format!("transfer/pacing-{pacing}/{label}"));
         group.throughput(criterion::Throughput::Bytes(TRANSFER_AMOUNT as u64));
         group.bench_function("simulated-time", |b| {
             b.iter_custom(|iters| {

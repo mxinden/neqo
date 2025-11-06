@@ -192,4 +192,25 @@ mod tests {
             "Expect packet to be sent immediately, instead of being paced below timer granularity"
         );
     }
+
+    #[test]
+    fn have_many_packets_large_cwnd() {
+        const SHORT_RTT: Duration = Duration::from_millis(100);
+        const BW: usize = 50 * 1_000_000;
+        let bdp = usize::try_from(
+            u128::try_from(BW / 8).expect("usize fits in u128") * SHORT_RTT.as_nanos()
+                / Duration::from_secs(1).as_nanos(),
+        )
+        .expect("cwnd fits in usize");
+        let mut n = now();
+        let mut p = Pacer::new(true, n, 2 * PACKET, PACKET);
+        let start = n;
+        let packet_count = 10_000;
+        for i in 0..packet_count {
+            n = p.next(SHORT_RTT, bdp);
+            p.spend(n, SHORT_RTT, bdp, PACKET);
+        }
+        // We expect _some_ time to have progressed after sending all the packets.
+        assert!(n - start > Duration::ZERO);
+    }
 }

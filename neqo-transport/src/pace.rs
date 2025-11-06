@@ -34,8 +34,8 @@ pub struct Pacer {
     t: Instant,
     /// The maximum capacity, or burst size, in bytes.
     m: usize,
-    /// The current capacity, in bytes.
-    c: usize,
+    /// The current capacity, in bytes (can be negative to track debt).
+    c: isize,
     /// The packet size or minimum capacity for sending, in bytes.
     p: usize,
 }
@@ -57,8 +57,8 @@ impl Pacer {
             enabled,
             t: now,
             m,
-            c: m,
-            p,
+            c: isize::try_from(m).unwrap_or(isize::MAX),
+            p: min(p, isize::MAX as usize),
         }
     }
 
@@ -67,7 +67,7 @@ impl Pacer {
     }
 
     pub fn set_mtu(&mut self, mtu: usize) {
-        self.p = mtu;
+        self.p = min(mtu, isize::MAX as usize);
     }
 
     /// Determine when the next packet will be available based on the provided RTT
@@ -75,7 +75,10 @@ impl Pacer {
     /// This returns a time, which could be in the past (this object doesn't know what
     /// the current time is).
     pub fn next(&self, rtt: Duration, cwnd: usize) -> Instant {
-        if self.c >= self.p {
+        let credit = i128::try_from(self.c).expect("isize fits into i64");
+        let packet = i128::try_from(self.p).expect("packet size fits into i64");
+
+        if credit >= packet {
             qtrace!("[{self}] next {cwnd}/{rtt:?} no wait = {:?}", self.t);
             return self.t;
         }
@@ -83,7 +86,9 @@ impl Pacer {
         // This is the inverse of the function in `spend`:
         // self.t + rtt * (self.p - self.c) / (PACER_SPEEDUP * cwnd)
         let r = rtt.as_nanos();
-        let d = r.saturating_mul(u128::try_from(self.p - self.c).expect("usize fits into u128"));
+        let deficit =
+            u128::try_from(packet - credit).expect("packet is larger than current credit");
+        let d = r.saturating_mul(deficit);
         let add = d / u128::try_from(cwnd * PACER_SPEEDUP).expect("usize fits into u128");
         let w = u64::try_from(add).map(Duration::from_nanos).unwrap_or(rtt);
 
@@ -121,7 +126,14 @@ impl Pacer {
             .unwrap_or(self.m);
 
         // Add the capacity up to a limit of `self.m`, then subtract `count`.
-        self.c = min(self.m, (self.c + incr).saturating_sub(count));
+        let incr_isize = isize::try_from(incr).unwrap_or(isize::MAX);
+        let count_isize = isize::try_from(count).unwrap_or(isize::MAX);
+        self.c = min(
+            isize::try_from(self.m).unwrap_or(isize::MAX),
+            self.c
+                .saturating_add(incr_isize)
+                .saturating_sub(count_isize),
+        );
         self.t = now;
     }
 }
@@ -206,7 +218,7 @@ mod tests {
         let mut p = Pacer::new(true, n, 2 * PACKET, PACKET);
         let start = n;
         let packet_count = 10_000;
-        for i in 0..packet_count {
+        for _ in 0..packet_count {
             n = p.next(SHORT_RTT, bdp);
             p.spend(n, SHORT_RTT, bdp, PACKET);
         }

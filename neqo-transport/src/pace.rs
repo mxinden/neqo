@@ -67,18 +67,17 @@ impl Pacer {
     }
 
     pub fn set_mtu(&mut self, mtu: usize) {
-        self.p = min(mtu, isize::MAX as usize);
+        self.p = mtu;
     }
 
-    /// Determine when the next packet will be available based on the provided RTT
-    /// and congestion window.  This doesn't update state.
-    /// This returns a time, which could be in the past (this object doesn't know what
-    /// the current time is).
+    /// Determine when the next packet will be available based on the provided
+    /// RTT, provided congestion window and acccumulated credit or debt.  This
+    /// doesn't update state.  This returns a time, which could be in the past
+    /// (this object doesn't know what the current time is).
     pub fn next(&self, rtt: Duration, cwnd: usize) -> Instant {
-        let credit = i128::try_from(self.c).expect("isize fits into i64");
-        let packet = i128::try_from(self.p).expect("packet size fits into i64");
+        let packet = isize::try_from(self.p).expect("packet size fits into isize");
 
-        if credit >= packet {
+        if self.c >= packet {
             qtrace!("[{self}] next {cwnd}/{rtt:?} no wait = {:?}", self.t);
             return self.t;
         }
@@ -87,7 +86,7 @@ impl Pacer {
         // self.t + rtt * (self.p - self.c) / (PACER_SPEEDUP * cwnd)
         let r = rtt.as_nanos();
         let deficit =
-            u128::try_from(packet - credit).expect("packet is larger than current credit");
+            u128::try_from(packet - self.c).expect("packet is larger than current credit");
         let d = r.saturating_mul(deficit);
         let add = d / u128::try_from(cwnd * PACER_SPEEDUP).expect("usize fits into u128");
         let w = u64::try_from(add).map(Duration::from_nanos).unwrap_or(rtt);
@@ -103,10 +102,13 @@ impl Pacer {
         nxt
     }
 
-    /// Spend credit.  This cannot fail; users of this API are expected to call
-    /// `next()` to determine when to spend.  This takes the current time (`now`),
-    /// an estimate of the round trip time (`rtt`), the estimated congestion
-    /// window (`cwnd`), and the number of bytes that were sent (`count`).
+    /// Spend credit. This cannot fail, but instead may carry dept into the
+    /// future (see [`Pacer::c`]). Users of this API are expected to call
+    /// [`Pacer::next`] to determine when to spend.
+    ///
+    /// This function takes the current time (`now`), an estimate of the round
+    /// trip time (`rtt`), the estimated congestion window (`cwnd`), and the
+    /// number of bytes that were sent (`count`).
     pub fn spend(&mut self, now: Instant, rtt: Duration, cwnd: usize, count: usize) {
         if !self.enabled {
             self.t = now;
@@ -126,13 +128,11 @@ impl Pacer {
             .unwrap_or(self.m);
 
         // Add the capacity up to a limit of `self.m`, then subtract `count`.
-        let incr_isize = isize::try_from(incr).unwrap_or(isize::MAX);
-        let count_isize = isize::try_from(count).unwrap_or(isize::MAX);
         self.c = min(
             isize::try_from(self.m).unwrap_or(isize::MAX),
             self.c
-                .saturating_add(incr_isize)
-                .saturating_sub(count_isize),
+                .saturating_add(isize::try_from(incr).unwrap_or(isize::MAX))
+                .saturating_sub(isize::try_from(count).unwrap_or(isize::MAX)),
         );
         self.t = now;
     }
@@ -206,11 +206,11 @@ mod tests {
     }
 
     #[test]
-    fn have_many_packets_large_cwnd() {
-        const SHORT_RTT: Duration = Duration::from_millis(100);
+    fn sends_below_granularity_accumulate_eventually() {
+        const RTT: Duration = Duration::from_millis(100);
         const BW: usize = 50 * 1_000_000;
         let bdp = usize::try_from(
-            u128::try_from(BW / 8).expect("usize fits in u128") * SHORT_RTT.as_nanos()
+            u128::try_from(BW / 8).expect("usize fits in u128") * RTT.as_nanos()
                 / Duration::from_secs(1).as_nanos(),
         )
         .expect("cwnd fits in usize");
@@ -219,8 +219,8 @@ mod tests {
         let start = n;
         let packet_count = 10_000;
         for _ in 0..packet_count {
-            n = p.next(SHORT_RTT, bdp);
-            p.spend(n, SHORT_RTT, bdp, PACKET);
+            n = p.next(RTT, bdp);
+            p.spend(n, RTT, bdp, PACKET);
         }
         // We expect _some_ time to have progressed after sending all the packets.
         assert!(n - start > Duration::ZERO);
